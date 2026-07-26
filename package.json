@@ -1,0 +1,43 @@
+{
+  "name": "evalgate",
+  "version": "0.0.0",
+  "description": "A pre-merge quality gate for LLM features. Scores output against committed cases in CI and fails the build on regression.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Chris Short",
+  "keywords": [
+    "llm",
+    "evals",
+    "evaluation",
+    "testing",
+    "ci",
+    "hallucination",
+    "grounding",
+    "quality-gate"
+  ],
+  "bin": {
+    "evalgate": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "tsc -p tsconfig.test.json && node --test 'dist-test/test/**/*.test.js'",
+    "typecheck": "tsc --noEmit",
+    "example": "tsc && node dist/cli.js run --suite examples/support-agent --sut examples/support-agent/sut.mjs --no-cache"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "yaml": "^2.6.0"
+  }
+}

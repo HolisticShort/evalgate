@@ -1,0 +1,47 @@
+name: evals
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  evalgate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Baseline comparison needs the merge-base, not just the tip.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      # Content-addressed — unchanged cases on an unchanged system are free.
+      # This is what keeps the gate cheap enough that nobody turns it off.
+      - uses: actions/cache@v4
+        with:
+          path: .evalgate/cache
+          key: evalgate-${{ hashFiles('evals/**') }}-${{ github.sha }}
+          restore-keys: evalgate-${{ hashFiles('evals/**') }}-
+
+      # Ref names are interpolated via env, never inline in `run:`. A branch name
+      # is attacker-controllable on fork PRs, and `${{ }}` inline is textual
+      # substitution into the shell — that's a command injection, not a variable.
+      - name: Run evals
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+          JUDGE_API_KEY: ${{ secrets.JUDGE_API_KEY }}
+        run: npx evalgate run --suite evals/ --baseline "origin/$BASE_REF"
+
+      - name: Upload result artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evalgate-result
+          path: .evalgate/result.json

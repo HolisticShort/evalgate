@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Cache is machine-local. history.jsonl IS committed — the drift time series is
+# the point, and it can't be reconstructed after the fact.
+.evalgate/cache/
+.evalgate/result.json
+
+.env
+.env.*
+.DS_Store
+dist-test/
