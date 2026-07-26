@@ -245,6 +245,64 @@ export interface Reporter {
   report(result: SuiteResult, out: (s: string) => void): void
 }
 
+// ---------------------------------------------------------------------------
+// Drift — the time series
+// ---------------------------------------------------------------------------
+
+/**
+ * One run, appended to .evalgate/history.jsonl (committed). Deliberately
+ * narrower than SuiteResult: this file has to stay readable and diffable for
+ * years. See reporters/json.historyRecord.
+ */
+export interface HistoryRecord {
+  ts: string
+  sut: string
+  suite: string
+  mean: number
+  passed: boolean
+  cases: Record<string, number>
+  judgeAgreement?: number
+}
+
+/**
+ * Movement of a single series over the window.
+ *
+ * `delta` is what gates; `slope` is what diagnoses. A case can post a small
+ * delta because it bounced, or because it slid steadily — the slope tells them
+ * apart and the steady slide is the one that matters.
+ */
+export interface SeriesDrift {
+  id: string
+  /** Observations found in the window. A case absent from a run is not a zero. */
+  points: number
+  first: number
+  last: number
+  /** last − first. Negative is a decline. */
+  delta: number
+  /** Least-squares change per run. */
+  slope: number
+  /** Decline over the window met or exceeded the threshold. */
+  drifting: boolean
+}
+
+export interface DriftReport {
+  suite: string
+  /** Records considered after windowing. */
+  runs: number
+  from: string
+  to: string
+  threshold: number
+  mean: SeriesDrift
+  cases: SeriesDrift[]
+  /**
+   * Cases with too little history to have a trend. Reported, never flagged —
+   * a new case must not read as a regression.
+   */
+  insufficient: string[]
+  /** True if the suite mean or any case is drifting. */
+  drifting: boolean
+}
+
 /** 0 pass · 1 gate failed · 2 config/runtime error. Config errors must never
  *  masquerade as quality failures — that's how teams learn to ignore the check. */
 export type ExitCode = 0 | 1 | 2

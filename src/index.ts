@@ -4,5 +4,7 @@ export { register, get as getAssertion, registered, byCost } from './assertions/
 export { cacheKey, cacheEnabled, MemoryCache, FileCache, type Cache } from './cache.js'
 export { loadSuites, validateSuite, ConfigError } from './config.js'
 export { consoleReporter } from './reporters/console.js'
+export { reportDrift } from './reporters/drift.js'
 export { jsonReporter, historyRecord } from './reporters/json.js'
+export { analyzeDrift, parseHistory, slope, MIN_POINTS, DEFAULT_THRESHOLD, type DriftOptions } from './drift.js'
 export { validate as validateSchema } from './schema.js'

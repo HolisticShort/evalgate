@@ -239,6 +239,27 @@ The suite writes one newline-delimited JSON record per run to `.evalgate/history
 has slid 0.04 per week for six weeks while every individual PR passed its regression gate. Per-PR gating
 cannot see that by construction; only the time series can.
 
+```
+evalgate drift [--history <path>] [--suite <name>] [--window <n>] [--threshold <n>] [--gate] [--json <path>]
+```
+
+Each series — the suite mean and every case — gets a **delta** (last − first over the window) and a
+**least-squares slope per run**. Delta is what gates; slope is what diagnoses, because a case can post a
+small delta by bouncing or by sliding steadily and only the second one is a trend.
+
+Three decisions that fall out of the data being a time series rather than a run:
+
+- **A case absent from a run is absent, not zero.** Counting a skipped case as 0 manufactures a cliff out
+  of a suite edit, which is the fastest way to teach people the report lies.
+- **Fewer than three observations is not a trend.** New cases are listed as `insufficient` and never
+  flagged — a case added last week must not read as a regression.
+- **Reporting is the default; `--gate` opts into failing the build.** Drift starts more conversations than
+  it should end, and a command that starts out red gets muted before anyone reads it.
+
+Records are consumed in file order, not sorted by timestamp: the file is an append log and append order is
+the truth. A line that won't parse is a config error (exit 2), not a skipped line — drift computed over a
+silently truncated series is worse than no drift report.
+
 ---
 
 ## Architecture
@@ -306,10 +327,10 @@ Honest list. These aren't decided.
 **Shipped.** `schema` · `contains` · `notContains` · `regex` · `length` · `noPII` ·
 `semanticSimilarity` · `rubric` · `grounded` · median-of-n sampling with variance surfacing ·
 all three threshold gates plus an implicit `criticalAssertions` gate · content-addressed cache
-(memory + file) · console + JSON reporters · history records · suite loader with strict validation ·
-GitHub Action. 49 tests, no network required.
+(memory + file) · console + JSON reporters · history records · `drift` CLI · suite loader with strict
+validation · GitHub Action. 61 tests, no network required.
 
-**Deferred.** `drift` CLI · calibration harness · PR-comment reporter · `consistency` assertion ·
+**Deferred.** Calibration harness · PR-comment reporter · `consistency` assertion ·
 `latency`/`cost` assertions · custom-assertion docs.
 
 The point of v0 is that `grounded` works and the gate is cheap enough to leave on. Everything else is

@@ -29,9 +29,10 @@ To filter within a file: `node --test --test-name-pattern 'median' dist-test/tes
 ## Architecture
 
 ```
-CLI (src/cli.ts)         run · report  [calibrate/drift deferred]
+CLI (src/cli.ts)         run · report · drift  [calibrate deferred]
 Runner (src/runner.ts)   load → sample → assert → aggregate → gate
-Assertions (registry) · Cache (content-addressed) · Reporters (console, json)
+Drift (src/drift.ts)     parse history → window → per-series delta + slope
+Assertions (registry) · Cache (content-addressed) · Reporters (console, json, drift)
 Providers                injected at the edge, never imported by core
 ```
 
@@ -58,6 +59,7 @@ These are deliberate and each one has a comment or a SPEC section behind it:
 - **`grounded` throws when there's no judge or no sources** rather than degrading to a keyword heuristic — a fake grounding score gets believed.
 - **Exit codes: 0 pass · 1 gate failed · 2 config/runtime error.** Config errors (`ConfigError`, thrown from `src/config.ts`) must never surface as quality failures. Keep the two paths distinct in `cli.ts`.
 - **New assertions register in `src/assertions/index.ts`**, they are not added to a switch. Set `cost` correctly — the runner uses it for ordering and budgeting.
+- **Drift: a case absent from a run is absent, not zero** (that manufactures a cliff out of a suite edit), **fewer than `MIN_POINTS` observations is not a trend** (a new case must not read as a regression), and **history is read in file order, never sorted by `ts`** — it's an append log and append order is the truth.
 
 ## TypeScript config
 

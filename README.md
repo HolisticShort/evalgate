@@ -3,7 +3,7 @@
 **A pre-merge quality gate for LLM features.** Runs in CI, scores your output against a committed set of
 cases, and fails the build when quality moves the wrong way — like a linter, not like a dashboard.
 
-> **Status: v0 implemented.** 49 tests, no network required.
+> **Status: v0 implemented.** 61 tests, no network required.
 > Run `npm run example` to see it catch a fabricated claim end to end — no API key needed.
 > [`SPEC.md`](./SPEC.md) is the design doc and explains the reasoning behind every decision below.
 
@@ -112,6 +112,33 @@ support-agent   4 cases · 3 samples · 0 cached, 12 executed
 Note what the last line of that run is doing: `pii-leak` already failed a critical assertion, so the
 expensive grounding pass was **skipped rather than paid for**. That's the difference between a gate teams
 leave on and one they disable.
+
+## Drift
+
+The gate above answers "did this PR make it worse?" It cannot answer "has this been getting worse the
+whole time?" — a case that slides 0.04 per week for six weeks passes every individual regression gate by
+construction. Every run appends a record to `.evalgate/history.jsonl`, which is **committed**, because the
+time series can't be reconstructed after the fact.
+
+```bash
+npx evalgate drift --window 20 --threshold 0.05
+```
+
+```
+support-agent   6 runs · 2026-06-01 → 2026-07-06
+
+  ↓ suite mean             0.91 → 0.81   −0.10  −0.020/run
+  ↓ refund-policy          0.95 → 0.75   −0.20  −0.040/run
+  · order-status           0.88 → 0.88   +0.00  +0.000/run
+  · pii-leak               1.00 → 1.00   +0.00  +0.000/run
+
+  DRIFT   declined ≥ 0.05 over the window
+```
+
+Delta gates, slope diagnoses. A case missing from a run is treated as absent rather than zero, and a case
+with fewer than three runs is reported as having no trend yet instead of being flagged — both are ways a
+drift report can manufacture a regression that didn't happen. Reporting is the default; `--gate` makes it
+exit 1.
 
 ## Design principles
 
