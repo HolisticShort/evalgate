@@ -99,6 +99,13 @@ export interface AssertionResult {
   meta?: unknown
   /** Forces the case critical regardless of score. Used by noPII and by contradicted claims. */
   critical?: boolean
+  /**
+   * The assertion never ran — the case had already failed a critical assertion
+   * and an expensive pass couldn't change the outcome. Distinct from scoring 0,
+   * and calibration rejects sets where a judged assertion was skipped: a score
+   * the judge never produced tells you nothing about the judge.
+   */
+  skipped?: boolean
 }
 
 export interface AssertionContext {
@@ -243,6 +250,82 @@ export interface GateResult {
 export interface Reporter {
   name: string
   report(result: SuiteResult, out: (s: string) => void): void
+}
+
+// ---------------------------------------------------------------------------
+// Calibration — who judges the judge
+// ---------------------------------------------------------------------------
+
+/**
+ * One human-scored case. The output is COMMITTED, not produced by a system
+ * under test: calibration holds the output constant and varies the judge, which
+ * is the only way to attribute a score change to the judge rather than the app.
+ */
+export interface CalibrationCase {
+  id: string
+  input: CaseInput
+  output: string | Record<string, unknown>
+  assertions: AssertionConfig[]
+  weights?: number[]
+  /** Human ground truth in [0,1]. The thing the judge is measured against. */
+  expected: number
+  /** Why the human scored it this way. Read during disagreement triage. */
+  note?: string
+}
+
+export interface CalibrationSet {
+  name: string
+  judge?: JudgeConfig
+  agreement: {
+    /** Floor for 1 − mean absolute error. */
+    minimum?: number
+    /** Ceiling for |mean signed error|. Bias is correctable; noise is not. */
+    maxBias?: number
+  }
+  cases: CalibrationCase[]
+}
+
+export interface CalibrationCaseResult {
+  id: string
+  human: number
+  judged: number
+  /** judged − human. Signed, because direction is the diagnosis. */
+  error: number
+  note?: string
+}
+
+export interface CalibrationGate {
+  gate: 'agreement' | 'bias'
+  passed: boolean
+  actual: number
+  expected: number
+  detail: string
+}
+
+export interface CalibrationReport {
+  set: string
+  /** Provider id. A calibration result belongs to one judge and no other. */
+  judge: string
+  cases: CalibrationCaseResult[]
+  /** 1 − mean absolute error. Published with every judged score. */
+  agreement: number
+  /** Mean signed error. Systematic offset — different bug than disagreement. */
+  bias: number
+  /** Pearson against human scores. Null when either series is constant. */
+  correlation: number | null
+  /** Largest absolute disagreements first. What a human actually reviews. */
+  worst: CalibrationCaseResult[]
+  gates: CalibrationGate[]
+  passed: boolean
+}
+
+/** Written by `calibrate`, read by `run` to publish agreement alongside scores. */
+export interface CalibrationStamp {
+  ts: string
+  set: string
+  judge: string
+  agreement: number
+  passed: boolean
 }
 
 // ---------------------------------------------------------------------------

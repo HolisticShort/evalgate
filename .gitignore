@@ -2,10 +2,16 @@ node_modules/
 dist/
 *.tsbuildinfo
 
-# Cache is machine-local. history.jsonl IS committed — the drift time series is
-# the point, and it can't be reconstructed after the fact.
-.evalgate/cache/
-.evalgate/result.json
+# Cache is machine-local.
+#
+# IN A PROJECT USING EVALGATE, commit .evalgate/history.jsonl (the drift time
+# series is the point and can't be reconstructed after the fact) and
+# .evalgate/calibration.json (it records that the judge was measured, and CI
+# reads it to publish agreement without re-running calibration).
+#
+# THIS repo is evalgate's own, where both files are just leftovers from
+# `npm run example` — so they're ignored here and only here.
+.evalgate/
 
 .env
 .env.*

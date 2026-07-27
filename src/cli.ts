@@ -5,6 +5,7 @@
  *   evalgate run    --suite evals/ [--baseline <ref>] [--sut ./sut.js] [--no-cache] [--json <path>]
  *   evalgate report --json <artifact>
  *   evalgate drift  [--history <path>] [--suite <name>] [--window <n>] [--threshold <n>] [--gate]
+ *   evalgate calibrate --set <path> --judge <module> [--json <path>]
  *
  * Exit codes: 0 pass · 1 gate failed · 2 config/runtime error.
  * Config errors are distinct from quality failures — a broken suite reported as
@@ -12,11 +13,20 @@
  */
 import { resolve } from 'node:path'
 import { readFile, writeFile, mkdir, appendFile } from 'node:fs/promises'
-import type { ExitCode, SuiteResult, SystemUnderTest, JudgeProvider, EmbeddingProvider } from './types.js'
-import { loadSuites, ConfigError } from './config.js'
+import type {
+  ExitCode,
+  SuiteResult,
+  SystemUnderTest,
+  JudgeProvider,
+  EmbeddingProvider,
+  CalibrationStamp,
+} from './types.js'
+import { loadSuites, loadCalibrationSet, ConfigError } from './config.js'
 import { run } from './runner.js'
+import { calibrate, validateSpread } from './calibration.js'
 import { FileCache } from './cache.js'
 import { consoleReporter } from './reporters/console.js'
+import { reportCalibration } from './reporters/calibration.js'
 import { reportDrift } from './reporters/drift.js'
 import { historyRecord } from './reporters/json.js'
 import { analyzeDrift, parseHistory, MIN_POINTS } from './drift.js'
@@ -24,12 +34,15 @@ import { analyzeDrift, parseHistory, MIN_POINTS } from './drift.js'
 const CACHE_DIR = '.evalgate/cache'
 const RESULT_PATH = '.evalgate/result.json'
 const HISTORY_PATH = '.evalgate/history.jsonl'
+const CALIBRATION_PATH = '.evalgate/calibration.json'
 
 interface Args {
   suite: string | undefined
   baseline: string | undefined
   sut: string | undefined
   json: string | undefined
+  set: string | undefined
+  judge: string | undefined
   history: string | undefined
   window: number | undefined
   threshold: number | undefined
@@ -45,6 +58,8 @@ function parseArgs(argv: string[]): Args {
     baseline: undefined,
     sut: undefined,
     json: undefined,
+    set: undefined,
+    judge: undefined,
     history: undefined,
     window: undefined,
     threshold: undefined,
@@ -57,6 +72,8 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--baseline') args.baseline = argv[++i]
     else if (a === '--sut') args.sut = argv[++i]
     else if (a === '--json') args.json = argv[++i]
+    else if (a === '--set') args.set = argv[++i]
+    else if (a === '--judge') args.judge = argv[++i]
     else if (a === '--history') args.history = argv[++i]
     else if (a === '--window') args.window = num(a, argv[++i])
     else if (a === '--threshold') args.threshold = num(a, argv[++i])
@@ -119,6 +136,11 @@ async function cmdRun(argv: string[]): Promise<ExitCode> {
     )
   }
 
+  // Every judged score carries the judge's measured uncertainty, so the report
+  // has to say what it is — see SPEC.md § Who judges the judge.
+  const agreement = await loadAgreement(mod.judge?.id)
+  if (agreement !== undefined) for (const r of results) r.judgeAgreement = agreement
+
   for (const r of results) consoleReporter.report(r, s => process.stdout.write(`${s}\n`))
 
   await mkdir('.evalgate', { recursive: true })
@@ -156,6 +178,81 @@ async function cmdReport(argv: string[]): Promise<ExitCode> {
   const results = Array.isArray(parsed) ? parsed : [parsed]
   for (const r of results) consoleReporter.report(r, s => process.stdout.write(`${s}\n`))
   return results.every(r => r.passed) ? 0 : 1
+}
+
+/**
+ * `calibrate` measures the judge against human-scored cases and writes a stamp
+ * that `run` publishes alongside every judged score.
+ *
+ * It is not a per-PR check. It runs when the judge model or the judge prompt
+ * changes, the same way changing a compiler means re-running the test suite.
+ */
+async function cmdCalibrate(argv: string[]): Promise<ExitCode> {
+  const args = parseArgs(argv)
+  if (!args.set) throw new ConfigError('--set <path> is required (the human-scored calibration set)')
+  if (!args.judge) throw new ConfigError('--judge <module> is required (a module exporting a `judge` provider)')
+
+  const set = await loadCalibrationSet(args.set)
+  validateSpread(set)
+
+  const mod = (await import(resolve(args.judge))) as SutModule
+  if (!mod.judge) throw new ConfigError(`${args.judge}: must export a \`judge\` provider`)
+
+  const report = await calibrate(set, {
+    judge: mod.judge,
+    ...(mod.embed ? { embed: mod.embed } : {}),
+  })
+
+  reportCalibration(report, s => process.stdout.write(`${s}\n`))
+
+  await mkdir('.evalgate', { recursive: true })
+  if (args.json) await writeFile(args.json, JSON.stringify(report, null, 2), 'utf8')
+
+  // The stamp is written even when calibration fails: `run` needs to know the
+  // judge is uncalibrated, and deleting the evidence on failure would let a bad
+  // judge look merely unmeasured.
+  const stamp: CalibrationStamp = {
+    ts: new Date().toISOString(),
+    set: report.set,
+    judge: report.judge,
+    agreement: report.agreement,
+    passed: report.passed,
+  }
+  await writeFile(CALIBRATION_PATH, JSON.stringify(stamp, null, 2), 'utf8')
+
+  return report.passed ? 0 : 1
+}
+
+/**
+ * Agreement is published with every judged score, or not published at all.
+ *
+ * A stamp from a different judge is worse than no stamp — it attaches one
+ * judge's credibility to another judge's numbers — so a mismatch warns and
+ * publishes nothing.
+ */
+async function loadAgreement(judgeId: string | undefined): Promise<number | undefined> {
+  if (!judgeId) return undefined
+  let stamp: CalibrationStamp
+  try {
+    stamp = JSON.parse(await readFile(CALIBRATION_PATH, 'utf8')) as CalibrationStamp
+  } catch {
+    process.stderr.write(
+      `warning: judge "${judgeId}" has no calibration — run \`evalgate calibrate\`. ` +
+        `An uncalibrated judge is a random number generator with good manners.\n`,
+    )
+    return undefined
+  }
+
+  if (stamp.judge !== judgeId) {
+    process.stderr.write(
+      `warning: calibration is for judge "${stamp.judge}" but "${judgeId}" is running — agreement not published\n`,
+    )
+    return undefined
+  }
+  if (!stamp.passed) {
+    process.stderr.write(`warning: judge "${judgeId}" last failed calibration (agreement ${stamp.agreement})\n`)
+  }
+  return stamp.agreement
 }
 
 /**
@@ -202,14 +299,14 @@ async function main(argv: string[]): Promise<ExitCode> {
     case 'drift':
       return cmdDrift(rest)
     case 'calibrate':
-      process.stderr.write(`${command} is deferred past v0 — see SPEC.md § Scope for v0\n`)
-      return 2
+      return cmdCalibrate(rest)
     default:
       process.stderr.write(
-        `usage: evalgate <run|report|drift> [options]\n` +
-          `  run    --suite <dir> --sut <module> [--baseline <json>] [--no-cache] [--json <path>]\n` +
-          `  report --json <artifact>\n` +
-          `  drift  [--history <path>] [--suite <name>] [--window <n>] [--threshold <n>] [--gate] [--json <path>]\n`,
+        `usage: evalgate <run|report|drift|calibrate> [options]\n` +
+          `  run       --suite <dir> --sut <module> [--baseline <json>] [--no-cache] [--json <path>]\n` +
+          `  report    --json <artifact>\n` +
+          `  drift     [--history <path>] [--suite <name>] [--window <n>] [--threshold <n>] [--gate] [--json <path>]\n` +
+          `  calibrate --set <path> --judge <module> [--json <path>]\n`,
       )
       return 2
   }

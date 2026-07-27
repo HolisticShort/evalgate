@@ -1,0 +1,45 @@
+name: calibration
+
+# Calibration runs on judge changes, not on every PR — the same way changing a
+# compiler means re-running the test suite, not re-running it on every commit.
+# Path filters are the whole mechanism; there is nothing to gate on otherwise.
+on:
+  pull_request:
+    paths:
+      - 'evals/calibration.yaml'
+      - 'evals/sut.mjs'
+      - 'evals/judge/**'
+
+jobs:
+  calibrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      # Exit 1 means the judge disagrees with humans past the committed
+      # threshold. That blocks the judge change — it does not block the feature.
+      - name: Calibrate judge
+        env:
+          JUDGE_API_KEY: ${{ secrets.JUDGE_API_KEY }}
+        run: npx evalgate calibrate --set evals/calibration.yaml --judge ./evals/sut.mjs --json calibration-report.json
+
+      - name: Upload calibration report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: calibration-report
+          path: calibration-report.json
+
+      # The stamp is what `run` reads to publish agreement. If it changed, it
+      # has to be committed — an uncommitted stamp means CI publishes the old
+      # judge's agreement, or none at all.
+      - name: Check the calibration stamp is committed
+        run: git diff --exit-code -- .evalgate/calibration.json

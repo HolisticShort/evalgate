@@ -202,6 +202,48 @@ deliberately, and most tools that do this never mention it. So:
 
 A judge nobody has calibrated is a random number generator with good manners.
 
+### The harness
+
+```
+evalgate calibrate --set evals/calibration.yaml --judge ./evals/sut.mjs
+```
+
+A calibration case is an eval case plus a human score — and a **committed output**. That last part is the
+whole mechanism: calibration holds the output constant and varies the judge, which is the only way a score
+change is attributable to the judge rather than to the application. Cases score through the same
+`evaluateAssertions` path a real run uses, because calibrating against a parallel scoring implementation
+would measure the wrong thing.
+
+Three numbers come out, and the split between the first two is the point:
+
+| | |
+|---|---|
+| `agreement` | 1 − mean absolute error. The number published with every judged score. |
+| `bias` | Mean **signed** error. A judge that is uniformly 0.2 generous is correctable by moving a threshold; a judge that is 0.2 off in random directions is not. Averaged together they hide each other. |
+| `correlation` | Pearson against the human scores — does the judge *rank* cases the way humans do. Null, not 0, when human scores don't vary: the question is unanswerable, and 0 would read as disagreement. |
+
+**A calibration set with no spread is rejected at load.** If every case should score 1.0, a judge that
+returns 1.0 unconditionally calibrates perfectly. So the set must contain at least one case the judge
+should fail and one it should pass, and at least five cases total. This is the same class of error as a
+test suite whose assertions can't fail, and it exits 2.
+
+**A skipped judged assertion is a config error, not a zero.** If `noPII` flags a calibration case critical
+before `grounded` runs, the 0 that lands in the report is a score the judge never produced — folding it
+into agreement would measure the short-circuit, not the judge.
+
+### Publishing agreement
+
+`calibrate` writes `.evalgate/calibration.json`, committed. `run` reads it and stamps `judgeAgreement`
+onto every result, which the console reporter and the history record already carry.
+
+The stamp is bound to a judge id. **A stamp from a different judge is worse than no stamp** — it attaches
+one judge's credibility to another judge's numbers — so a mismatch warns and publishes nothing. A missing
+stamp warns too. The failure mode being designed out is a judge swap that quietly inherits the old judge's
+credibility.
+
+The stamp is written even when calibration fails, so `run` can tell "uncalibrated" from "unmeasured".
+Deleting the evidence on failure would let a bad judge look merely new.
+
 ---
 
 ## Caching
@@ -327,11 +369,11 @@ Honest list. These aren't decided.
 **Shipped.** `schema` · `contains` · `notContains` · `regex` · `length` · `noPII` ·
 `semanticSimilarity` · `rubric` · `grounded` · median-of-n sampling with variance surfacing ·
 all three threshold gates plus an implicit `criticalAssertions` gate · content-addressed cache
-(memory + file) · console + JSON reporters · history records · `drift` CLI · suite loader with strict
-validation · GitHub Action. 61 tests, no network required.
+(memory + file) · console + JSON reporters · history records · `drift` CLI · `calibrate` CLI with
+agreement publishing · suite loader with strict validation · GitHub Action. 76 tests, no network required.
 
-**Deferred.** Calibration harness · PR-comment reporter · `consistency` assertion ·
-`latency`/`cost` assertions · custom-assertion docs.
+**Deferred.** PR-comment reporter · `consistency` assertion · `latency`/`cost` assertions ·
+custom-assertion docs.
 
 The point of v0 is that `grounded` works and the gate is cheap enough to leave on. Everything else is
 table stakes that has to exist for those two to be usable.

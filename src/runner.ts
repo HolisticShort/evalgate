@@ -78,7 +78,7 @@ async function runCase(c: EvalCase, ctx: CaseCtx): Promise<CaseResult> {
     const { output, cached } = await produce(c, i, ctx)
     anyCached ||= cached
 
-    const results = await assertAll(c, output, ctx)
+    const results = await evaluateAssertions(c, output, { judge: ctx.judge, embed: ctx.embed })
     const score = weightedMean(results.map(r => r.score), c.weights)
 
     sampleScores.push(score)
@@ -134,10 +134,21 @@ async function produce(
   return { output, cached: false }
 }
 
-async function assertAll(
+/** Providers are optional everywhere; assertions that need one say so loudly. */
+export interface Providers {
+  judge?: JudgeProvider | undefined
+  embed?: EmbeddingProvider | undefined
+}
+
+/**
+ * Run every assertion on a fixed output. Exported because calibration scores a
+ * committed output rather than one produced by a system under test — same
+ * assertions, same scoring, no SUT.
+ */
+export async function evaluateAssertions(
   c: EvalCase,
   output: string | Record<string, unknown>,
-  ctx: CaseCtx,
+  providers: Providers,
 ): Promise<(AssertionResult & { type: string })[]> {
   const ordered = byCost(c.assertions as { type: string }[]) as AssertionConfig[]
   const results: (AssertionResult & { type: string })[] = []
@@ -150,6 +161,7 @@ async function assertAll(
         type: config.type,
         score: 0,
         explanation: 'skipped — case already failed a critical assertion',
+        skipped: true,
       })
       continue
     }
@@ -158,8 +170,8 @@ async function assertAll(
     const result = await assertion.evaluate(config, {
       case: c,
       output,
-      ...(ctx.judge ? { judge: ctx.judge } : {}),
-      ...(ctx.embed ? { embed: ctx.embed } : {}),
+      ...(providers.judge ? { judge: providers.judge } : {}),
+      ...(providers.embed ? { embed: providers.embed } : {}),
     })
     results.push({ ...result, type: config.type })
   }

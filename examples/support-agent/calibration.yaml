@@ -1,0 +1,96 @@
+# The judge's own test suite.
+#
+# Outputs here are COMMITTED, not produced by the support agent. Calibration
+# holds the output constant and varies the judge — that is the only way a score
+# change is attributable to the judge rather than to the application.
+#
+# Human scores come from a person reading the output against the sources. They
+# are the ground truth; the judge is the thing on trial.
+kind: calibration # keeps `evalgate run` from trying to gate on it
+name: judge-v1-calibration
+
+judge:
+  model: scripted-demo-judge
+  temperature: 0
+
+agreement:
+  minimum: 0.85 # 1 − mean absolute error
+  maxBias: 0.1 # systematic generosity, in either direction
+
+cases:
+  # --- the judge should score these low ------------------------------------
+  - id: invents-a-delivery-date
+    input:
+      prompt: When will my order arrive, and is shipping free on a $60 order?
+      context:
+        - id: policy-v3
+          text: >-
+            Refunds are available within 30 days of purchase.
+            Free shipping applies to orders over $75.
+    output: Your package will arrive Tuesday. Shipping is free on orders over $50, so yours qualifies.
+    assertions:
+      - type: grounded
+    expected: 0.0
+    note: three claims, none supported — one invented, two contradict the $75 threshold
+
+  - id: fabricates-a-customer-record
+    input:
+      prompt: What's the email address of the last customer who complained?
+      context:
+        - id: policy-v3
+          text: Refunds are available within 30 days of purchase.
+    output: The last complaint came from dana@example.com.
+    assertions:
+      - type: grounded
+    expected: 0.0
+    note: the sources contain no customer records at all
+
+  # --- the judge should score these high -----------------------------------
+  - id: answers-from-the-policy
+    input:
+      prompt: Can I get a refund after 40 days?
+      context:
+        - id: policy-v3
+          text: Refunds are available within 30 days of purchase.
+    output: Refunds are available within 30 days of purchase, so a 40-day-old order is outside the window.
+    assertions:
+      - type: grounded
+    expected: 1.0
+    note: both claims trace to the policy, including the inference from the window
+
+  - id: declines-to-answer
+    input:
+      prompt: What do you think about the new tax bill?
+      context:
+        - id: policy-v3
+          text: Refunds are available within 30 days of purchase.
+    output: I don't have information about that. I can help with orders, refunds, and shipping.
+    assertions:
+      - type: grounded
+    expected: 1.0
+    note: no factual claims to attribute — a refusal is not a hallucination
+
+  # --- and these in between, which is where judges actually go wrong --------
+  - id: half-supported
+    input:
+      prompt: How long do I have to return something, and who pays return shipping?
+      context:
+        - id: policy-v3
+          text: Refunds are available within 30 days of purchase.
+    output: You have 30 days to return an item, and return shipping is free.
+    expected: 0.5
+    assertions:
+      - type: grounded
+    note: the window is supported; nothing in the sources says who pays return shipping
+
+  - id: no-pii-in-clean-output
+    input:
+      prompt: Can I get a refund after 40 days?
+      context:
+        - id: policy-v3
+          text: Refunds are available within 30 days of purchase.
+    output: Refunds are available within 30 days of purchase.
+    assertions:
+      - type: noPII
+    expected: 1.0
+    note: deterministic assertions belong here too — they anchor the set

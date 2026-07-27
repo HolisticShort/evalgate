@@ -1,7 +1,7 @@
 import { readFile, readdir } from 'node:fs/promises'
 import { join, extname, resolve } from 'node:path'
 import { parse as parseYaml } from 'yaml'
-import type { Suite, EvalCase } from './types.js'
+import type { Suite, EvalCase, CalibrationSet, CalibrationCase } from './types.js'
 
 /**
  * Suites are files in the repo, reviewed in PRs. Quality standards that live in
@@ -14,7 +14,14 @@ import type { Suite, EvalCase } from './types.js'
 export async function loadSuites(path: string): Promise<Suite[]> {
   const files = await collect(resolve(path))
   if (files.length === 0) throw new ConfigError(`no suite files found under ${path}`)
-  return Promise.all(files.map(loadSuite))
+
+  const docs = await Promise.all(files.map(async f => ({ file: f, doc: await parseFile(f) })))
+  // Calibration sets live alongside suites — they describe the same cases and
+  // belong in the same review. `kind` keeps `run` from trying to gate on them.
+  const suites = docs.filter(d => !(isObject(d.doc) && d.doc['kind'] === 'calibration'))
+  if (suites.length === 0) throw new ConfigError(`no suite files found under ${path} — only calibration sets`)
+
+  return suites.map(d => validateSuite(d.doc, d.file))
 }
 
 export class ConfigError extends Error {}
@@ -32,15 +39,13 @@ async function collect(path: string): Promise<string[]> {
   return out.sort()
 }
 
-async function loadSuite(file: string): Promise<Suite> {
+async function parseFile(file: string): Promise<unknown> {
   const raw = await readFile(file, 'utf8')
-  let doc: unknown
   try {
-    doc = extname(file) === '.json' ? JSON.parse(raw) : parseYaml(raw)
+    return extname(file) === '.json' ? JSON.parse(raw) : parseYaml(raw)
   } catch (e) {
     throw new ConfigError(`${file}: could not parse — ${(e as Error).message}`)
   }
-  return validateSuite(doc, file)
 }
 
 export function validateSuite(doc: unknown, file = '<inline>'): Suite {
@@ -53,6 +58,11 @@ export function validateSuite(doc: unknown, file = '<inline>'): Suite {
 
   const thresholds = doc['thresholds']
   if (!isObject(thresholds)) {
+    // A calibration set landing here is the likely cause, and "thresholds is
+    // required" would send someone off to add thresholds to the wrong file.
+    if (looksLikeCalibration(doc)) {
+      throw new ConfigError(`${file}: this looks like a calibration set — add \`kind: calibration\` so \`run\` skips it`)
+    }
     throw new ConfigError(`${file}: suite.thresholds is required — a gate with no thresholds gates nothing`)
   }
   if (
@@ -115,6 +125,99 @@ export function validateSuite(doc: unknown, file = '<inline>'): Suite {
   }
 
   return { ...(doc as object), name, cases, thresholds } as Suite
+}
+
+// ---------------------------------------------------------------------------
+// Calibration sets
+// ---------------------------------------------------------------------------
+
+export async function loadCalibrationSet(file: string): Promise<CalibrationSet> {
+  const raw = await readFile(file, 'utf8').catch(() => {
+    throw new ConfigError(`could not read calibration set at ${file}`)
+  })
+  let doc: unknown
+  try {
+    doc = extname(file) === '.json' ? JSON.parse(raw) : parseYaml(raw)
+  } catch (e) {
+    throw new ConfigError(`${file}: could not parse — ${(e as Error).message}`)
+  }
+  return validateCalibrationSet(doc, file)
+}
+
+export function validateCalibrationSet(doc: unknown, file = '<inline>'): CalibrationSet {
+  if (!isObject(doc)) throw new ConfigError(`${file}: calibration set must be an object`)
+
+  const name = doc['name']
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new ConfigError(`${file}: calibration set needs a name`)
+  }
+
+  const rawCases = doc['cases']
+  if (!Array.isArray(rawCases) || rawCases.length === 0) {
+    throw new ConfigError(`${file}: calibration set needs a non-empty cases array`)
+  }
+
+  const seen = new Set<string>()
+  const cases: CalibrationCase[] = rawCases.map((c, i) => {
+    if (!isObject(c)) throw new ConfigError(`${file}: cases[${i}] must be an object`)
+
+    const id = c['id']
+    if (typeof id !== 'string' || id.length === 0) throw new ConfigError(`${file}: cases[${i}].id is required`)
+    if (seen.has(id)) throw new ConfigError(`${file}: duplicate calibration case id "${id}"`)
+    seen.add(id)
+
+    const input = c['input']
+    if (!isObject(input) || typeof input['prompt'] !== 'string') {
+      throw new ConfigError(`${file}: calibration case "${id}" needs input.prompt`)
+    }
+
+    // The output is committed, not produced. Calibration holds it constant so a
+    // score change is attributable to the judge and nothing else.
+    if (c['output'] === undefined) {
+      throw new ConfigError(
+        `${file}: calibration case "${id}" needs a committed output — calibration scores a fixed output, not a system under test`,
+      )
+    }
+
+    const expected = c['expected']
+    if (typeof expected !== 'number' || expected < 0 || expected > 1) {
+      throw new ConfigError(`${file}: calibration case "${id}" needs a human score in [0,1], got ${String(expected)}`)
+    }
+
+    const assertions = c['assertions']
+    if (!Array.isArray(assertions) || assertions.length === 0) {
+      throw new ConfigError(`${file}: calibration case "${id}" needs at least one assertion`)
+    }
+    for (const [j, a] of assertions.entries()) {
+      if (!isObject(a) || typeof a['type'] !== 'string') {
+        throw new ConfigError(`${file}: calibration case "${id}" assertions[${j}] needs a type`)
+      }
+    }
+
+    return c as unknown as CalibrationCase
+  })
+
+  const agreement = doc['agreement']
+  if (agreement !== undefined && !isObject(agreement)) {
+    throw new ConfigError(`${file}: agreement must be an object with minimum and/or maxBias`)
+  }
+
+  // The judge is pinned infrastructure. A calibration set that lets temperature
+  // float is calibrating something other than what will run.
+  const judge = doc['judge']
+  if (isObject(judge) && judge['temperature'] !== undefined && judge['temperature'] !== 0) {
+    throw new ConfigError(`${file}: judge.temperature must be 0 — a judge that varies cannot be calibrated`)
+  }
+
+  return { ...(doc as object), name, cases, agreement: (agreement ?? {}) as CalibrationSet['agreement'] } as CalibrationSet
+}
+
+function looksLikeCalibration(doc: Record<string, unknown>): boolean {
+  const cases = doc['cases']
+  return (
+    doc['agreement'] !== undefined ||
+    (Array.isArray(cases) && cases.some(c => isObject(c) && c['expected'] !== undefined))
+  )
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {

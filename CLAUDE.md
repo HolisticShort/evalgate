@@ -14,6 +14,7 @@ npm run dev            # tsc --watch
 npm run typecheck      # tsc --noEmit
 npm test               # tsc -p tsconfig.test.json → dist-test/, then node --test
 npm run example        # end-to-end demo run, no API key needed
+npm run example:calibrate   # measure the scripted judge against human scores
 ```
 
 Tests compile first (`tsconfig.test.json` → `dist-test/`), then run against the compiled JS. To run a single test file:
@@ -29,10 +30,11 @@ To filter within a file: `node --test --test-name-pattern 'median' dist-test/tes
 ## Architecture
 
 ```
-CLI (src/cli.ts)         run · report · drift  [calibrate deferred]
+CLI (src/cli.ts)         run · report · drift · calibrate
 Runner (src/runner.ts)   load → sample → assert → aggregate → gate
 Drift (src/drift.ts)     parse history → window → per-series delta + slope
-Assertions (registry) · Cache (content-addressed) · Reporters (console, json, drift)
+Calibration (src/calibration.ts)  fixed output → judge → agreement / bias / correlation
+Assertions (registry) · Cache (content-addressed) · Reporters (console, json, drift, calibration)
 Providers                injected at the edge, never imported by core
 ```
 
@@ -59,6 +61,9 @@ These are deliberate and each one has a comment or a SPEC section behind it:
 - **`grounded` throws when there's no judge or no sources** rather than degrading to a keyword heuristic — a fake grounding score gets believed.
 - **Exit codes: 0 pass · 1 gate failed · 2 config/runtime error.** Config errors (`ConfigError`, thrown from `src/config.ts`) must never surface as quality failures. Keep the two paths distinct in `cli.ts`.
 - **New assertions register in `src/assertions/index.ts`**, they are not added to a switch. Set `cost` correctly — the runner uses it for ordering and budgeting.
+- **Calibration holds the output constant.** A `CalibrationCase` carries a committed `output`; there is no SUT. It scores through `evaluateAssertions` — the same path `run` uses — because calibrating against a parallel scoring implementation measures the wrong thing. A set with no spread (`validateSpread`) and a skipped judged assertion are both config errors, not low scores.
+- **`judgeAgreement` is bound to a judge id.** `run` reads `.evalgate/calibration.json` and publishes agreement only when `stamp.judge === judge.id`; a mismatch warns and publishes nothing. Never loosen this — it exists so a judge swap can't inherit the old judge's credibility.
+- **Suite discovery skips `kind: calibration` files.** Calibration sets sit alongside suites; `validateSuite` detects a misfiled one and says so by name.
 - **Drift: a case absent from a run is absent, not zero** (that manufactures a cliff out of a suite edit), **fewer than `MIN_POINTS` observations is not a trend** (a new case must not read as a regression), and **history is read in file order, never sorted by `ts`** — it's an append log and append order is the truth.
 
 ## TypeScript config
@@ -67,4 +72,6 @@ These are deliberate and each one has a comment or a SPEC section behind it:
 
 ## Files
 
-`.evalgate/history.jsonl` is **committed** — the drift time series can't be reconstructed after the fact. `.evalgate/cache/` and `.evalgate/result.json` are gitignored.
+In a project *using* evalgate, `.evalgate/history.jsonl` and `.evalgate/calibration.json` are **committed** — the drift time series can't be reconstructed after the fact, and the calibration stamp is how CI publishes agreement without re-running the judge. `.evalgate/cache/` and `result.json` are machine-local.
+
+In **this** repo the whole `.evalgate/` directory is gitignored: everything in it is a leftover from `npm run example`, not project data.

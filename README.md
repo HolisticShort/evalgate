@@ -3,7 +3,7 @@
 **A pre-merge quality gate for LLM features.** Runs in CI, scores your output against a committed set of
 cases, and fails the build when quality moves the wrong way — like a linter, not like a dashboard.
 
-> **Status: v0 implemented.** 61 tests, no network required.
+> **Status: v0 implemented.** 76 tests, no network required.
 > Run `npm run example` to see it catch a fabricated claim end to end — no API key needed.
 > [`SPEC.md`](./SPEC.md) is the design doc and explains the reasoning behind every decision below.
 
@@ -60,7 +60,7 @@ cases:
       context: [{ id: policy-v3, text: "Refunds are available within 30 days of purchase." }]
     assertions:
       - type: grounded
-        config: { contradictionIsCritical: true }
+        contradictionIsCritical: true   # flat, like every assertion's options
       - type: noPII
       - type: length
         max: 800
@@ -167,10 +167,44 @@ Custom assertions register alongside the built-ins and get the same scoring, cac
 ## Who judges the judge
 
 `rubric` and `grounded` use a model to evaluate a model. That's circular unless the circle is closed
-deliberately, and most tools that do it never mention it. So: the judge model is **pinned** at
-`temperature: 0`, it has its **own calibration set** of human-scored cases committed to the repo,
-calibration must pass before a judge change lands, and **judge–human agreement is published in every
-report**. A judge nobody has calibrated is a random number generator with good manners.
+deliberately, and most tools that do it never mention it. So the judge gets its own test suite:
+
+```bash
+npx evalgate calibrate --set evals/calibration.yaml --judge ./evals/sut.mjs
+```
+
+```
+judge-v1-calibration   judge scripted-demo-judge · 6 human-scored cases
+
+  ✓ agreement    judge–human agreement 0.917 ≥ minimum 0.85
+  ✓ bias         judge scores 0.083 low on average (allowed ±0.1)
+  · correlation  0.92 — does the judge rank cases the way humans do
+
+  largest disagreements
+    ✗ half-supported         human 1.00  judge 0.50   0.50 too harsh
+        the window is supported; nothing in the sources says who pays return shipping
+
+  CALIBRATED   agreement 0.92 — published with every judged score
+```
+
+A calibration case is an eval case plus a human score and a **committed output** — calibration holds the
+output constant and varies the judge, which is the only way a score change is attributable to the judge
+rather than to your application.
+
+`bias` is split out from `agreement` because they're different bugs: a judge that's uniformly 0.2 generous
+can be fixed by moving a threshold; a judge that's 0.2 off in random directions can't be fixed at all.
+Averaged together, they hide each other.
+
+Two things the harness refuses to do:
+
+- **Calibrate against a set with no spread.** If every case should score 1.0, a judge that returns 1.0
+  unconditionally scores perfectly. The set must contain at least one case the judge should fail.
+- **Publish one judge's agreement under another judge's name.** The stamp is bound to a judge id; a
+  mismatch warns and publishes nothing, rather than letting a judge swap inherit the old judge's credibility.
+
+The judge model is pinned at `temperature: 0`, calibration must pass before a judge change lands, and
+agreement rides along with every judged score in the run report and the history record. A judge nobody has
+calibrated is a random number generator with good manners.
 
 ## What this is not
 

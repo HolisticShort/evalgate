@@ -48,6 +48,13 @@ const CLAIMS = {
     { text: 'The last complaint came from dana@example.com.', type: 'factual', hedged: false },
   ],
   "I don't have information about that. I can help with orders, refunds, and shipping.": [],
+
+  // Only reached by the calibration set — a half-supported answer, which is
+  // where judges actually go wrong. The clear-cut cases agree by accident.
+  'You have 30 days to return an item, and return shipping is free.': [
+    { text: 'You have 30 days to return an item.', type: 'temporal', hedged: false },
+    { text: 'Return shipping is free.', type: 'factual', hedged: false },
+  ],
 }
 
 const VERDICTS = {
@@ -80,6 +87,16 @@ const VERDICTS = {
     status: 'unsupported',
     evidence: [],
     reasoning: 'the sources contain no customer records',
+  },
+  'You have 30 days to return an item.': {
+    status: 'supported',
+    evidence: [{ docId: 'policy-v3', span: 'Refunds are available within 30 days of purchase' }],
+    reasoning: 'the 30-day window is stated directly',
+  },
+  'Return shipping is free.': {
+    status: 'unsupported',
+    evidence: [],
+    reasoning: 'no source says who pays return shipping',
   },
 }
 
