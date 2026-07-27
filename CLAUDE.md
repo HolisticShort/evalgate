@@ -20,7 +20,11 @@ npm run example:calibrate   # measure the scripted judge against human scores
 `evalgate comment` renders the PR comment from a `run` artifact; try it with
 `node dist/cli.js comment --json .evalgate/result.json` after `npm run example`.
 
-Tests compile first (`tsconfig.test.json` → `dist-test/`), then run against the compiled JS. To run a single test file:
+Tests compile first (`tsconfig.test.json` → `dist-test/`), then run against the compiled JS.
+
+**The `test` script passes an unquoted shell glob (`dist-test/test/*.test.js`) on purpose — do not "fix" it to a quoted `**` pattern or a bare directory.** `node --test` disagrees with itself across the supported range: Node 20 has no glob support and reads a quoted pattern as a literal path (`Could not find …`), while Node 22+ treats a bare directory as a module to execute (`Cannot find module …`). Letting the shell expand the glob is the only form that works on both, and `engines` promises `>=20`. Test files are flat in `dist-test/test/`; a subdirectory would need this revisited.
+
+To run a single test file:
 
 ```bash
 tsc -p tsconfig.test.json && node --test dist-test/test/runner.test.js

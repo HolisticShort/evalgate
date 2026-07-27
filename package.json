@@ -42,7 +42,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "tsc -p tsconfig.test.json && node --test 'dist-test/test/**/*.test.js'",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js",
     "typecheck": "tsc --noEmit",
     "example": "tsc && node dist/cli.js run --suite examples/support-agent --sut examples/support-agent/sut.mjs --no-cache",
     "example:calibrate": "tsc && node dist/cli.js calibrate --set examples/support-agent/calibration.yaml --judge examples/support-agent/sut.mjs"
