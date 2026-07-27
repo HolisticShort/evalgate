@@ -335,12 +335,35 @@ library that can't be extended is a library that gets forked.
 ## CI contract
 
 ```yaml
-- run: npx evalgate run --suite evals/ --baseline main
+- run: npx evalgate run --suite evals/ --sut ./evals/sut.mjs --baseline baseline.json
 ```
 
 Exit codes: `0` pass · `1` gate failed · `2` config or runtime error.
 Config errors are distinct from quality failures — a broken suite must never be reported as a quality
 regression, because that's how teams learn to ignore the check.
+
+### The baseline is a file, and a missing one is not a pass
+
+`--baseline` takes a **path to a result artifact**, not a git ref. An earlier draft of this spec and of the
+shipped workflow passed `main` and `origin/$BASE_REF`; both failed to read, warned to stderr, and the
+regression gate reported itself as ✓ skipped. The gate this spec calls "the one that earns its keep" was
+inert in the recommended configuration, and the only evidence was a stderr line nobody reads in CI. That
+is precisely the silent-green failure the exit-code contract exists to prevent, committed by the tool
+itself.
+
+The rule now:
+
+- **No `--baseline`** → the caller opted out; the regression gate reports skipped. Honest.
+- **`--baseline` that resolves** → the gate evaluates.
+- **`--baseline` that does not resolve** → config error, exit 2. Asking for a regression gate and silently
+  not getting one is worse than not asking.
+
+CI resolves the base branch's artifact into a file before the run, so "the base branch has no baseline yet"
+is distinguishable from "the path is wrong". The first case emits a GitHub `::notice::` — the absence
+belongs in the checks UI, not in stderr.
+
+Producing the baseline is still the open question below. Today it is a committed artifact:
+`evalgate run --json .evalgate/baseline.json` on the base branch, reviewed in a PR like everything else.
 
 Output: console summary, a JSON artifact, and a PR comment. GitHub annotations on the failing case remain
 deferred.

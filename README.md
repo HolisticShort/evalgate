@@ -70,6 +70,11 @@ cases:
 npx evalgate run --suite evals/ --sut ./evals/sut.mjs --baseline .evalgate/baseline.json
 ```
 
+`--baseline` takes a path to a result artifact, not a git ref. Create one on your base branch with
+`evalgate run --json .evalgate/baseline.json` and commit it. A `--baseline` that can't be read is a config
+error (exit 2), not a skipped gate — asking for a regression gate and silently not getting one is worse
+than not asking for it.
+
 Your `--sut` module exports the thing being tested, plus the judge and embedding providers. evalgate never
 imports a provider SDK — that seam is what keeps the core testable offline and portable across stacks.
 

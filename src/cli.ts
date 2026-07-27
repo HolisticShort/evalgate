@@ -2,7 +2,7 @@
 /**
  * evalgate CLI
  *
- *   evalgate run    --suite evals/ [--baseline <ref>] [--sut ./sut.js] [--no-cache] [--json <path>]
+ *   evalgate run    --suite evals/ --sut ./sut.js [--baseline <json>] [--no-cache] [--json <path>]
  *   evalgate report --json <artifact>
  *   evalgate drift  [--history <path>] [--suite <name>] [--window <n>] [--threshold <n>] [--gate]
  *   evalgate calibrate --set <path> --judge <module> [--json <path>]
@@ -23,6 +23,7 @@ import type {
   CalibrationStamp,
 } from './types.js'
 import { loadSuites, loadCalibrationSet, ConfigError } from './config.js'
+import { loadBaselines } from './baseline.js'
 import { run } from './runner.js'
 import { calibrate, validateSpread } from './calibration.js'
 import { FileCache } from './cache.js'
@@ -160,23 +161,6 @@ async function cmdRun(argv: string[]): Promise<ExitCode> {
   for (const r of results) await appendFile(HISTORY_PATH, `${historyRecord(r, ts)}\n`, 'utf8')
 
   return results.every(r => r.passed) ? 0 : 1
-}
-
-/**
- * A missing baseline is not an error — first run on a new suite has nothing to
- * compare against. The regression gate reports itself as skipped rather than
- * quietly passing. See runner.evaluateGates.
- */
-async function loadBaselines(path?: string): Promise<Map<string, SuiteResult>> {
-  const map = new Map<string, SuiteResult>()
-  if (!path) return map
-  try {
-    const parsed = JSON.parse(await readFile(path, 'utf8')) as SuiteResult[] | SuiteResult
-    for (const r of Array.isArray(parsed) ? parsed : [parsed]) map.set(r.suite, r)
-  } catch {
-    process.stderr.write(`warning: could not read baseline at ${path} — regression gate will be skipped\n`)
-  }
-  return map
 }
 
 /**

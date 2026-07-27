@@ -59,7 +59,7 @@ These are deliberate and each one has a comment or a SPEC section behind it:
 - **Missing SUT version disables the cache with a loud warning**, never guesses. Silently serving stale results is the worst failure this tool can have.
 - **Cache read failures are misses, never errors.** The cache is an optimization and must never be a source of red.
 - **Cache keys use `stableStringify`** (sorted keys) — plain `JSON.stringify` produces spurious misses.
-- **Missing baseline → regression gate reports "skipped (not evaluated)"**, not a pass.
+- **`--baseline` is a file path, never a git ref**, and one that fails to load is a config error (exit 2) — see `src/baseline.ts`. Omitting the flag is the only way to legitimately skip the regression gate, and that reports "skipped (not evaluated)" rather than passing. The shipped CI template once passed `origin/$BASE_REF` here, which made the flagship gate inert while reporting ✓; the workflow now resolves the ref into a file with `git show` first.
 - **A `criticalCases` id not present in the suite fails the gate** — it's a config error, and passing a gate over a nonexistent case is worse than a noisy failure.
 - **`grounded` throws when there's no judge or no sources** rather than degrading to a keyword heuristic — a fake grounding score gets believed.
 - **Exit codes: 0 pass · 1 gate failed · 2 config/runtime error.** Config errors (`ConfigError`, thrown from `src/config.ts`) must never surface as quality failures. Keep the two paths distinct in `cli.ts`.

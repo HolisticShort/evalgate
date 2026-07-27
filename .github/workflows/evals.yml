@@ -34,14 +34,40 @@ jobs:
           key: evalgate-${{ hashFiles('evals/**') }}-${{ github.sha }}
           restore-keys: evalgate-${{ hashFiles('evals/**') }}-
 
+      # The baseline is a result artifact committed on the base branch, not a git
+      # ref — `--baseline` reads a file. Resolve it here, where "the base branch
+      # has no baseline yet" can be told apart from "the path is wrong".
+      #
       # Ref names are interpolated via env, never inline in `run:`. A branch name
       # is attacker-controllable on fork PRs, and `${{ }}` inline is textual
       # substitution into the shell — that's a command injection, not a variable.
-      - name: Run evals
+      - name: Resolve baseline from the base branch
+        id: baseline
         env:
           BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          if git show "origin/$BASE_REF:.evalgate/baseline.json" > baseline.json 2>/dev/null; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            rm -f baseline.json
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=evalgate::No baseline committed on $BASE_REF — the regression gate will not run. Commit .evalgate/baseline.json to enable it."
+          fi
+
+      # An unresolvable --baseline is a config error (exit 2), so the flag is
+      # passed only when the file exists. A regression gate that silently does
+      # not run is worse than one that is explicitly absent — and the notice
+      # above puts that absence in the PR checks UI, not in stderr.
+      - name: Run evals
+        env:
+          BASELINE_FOUND: ${{ steps.baseline.outputs.found }}
           JUDGE_API_KEY: ${{ secrets.JUDGE_API_KEY }}
-        run: npx evalgate run --suite evals/ --baseline "origin/$BASE_REF"
+        run: |
+          if [ "$BASELINE_FOUND" = "true" ]; then
+            npx evalgate run --suite evals/ --sut ./evals/sut.mjs --baseline baseline.json
+          else
+            npx evalgate run --suite evals/ --sut ./evals/sut.mjs
+          fi
 
       - name: Upload result artifact
         if: always()
@@ -55,7 +81,14 @@ jobs:
       # itself a failure, so this step never masks the verdict from `run`.
       - name: Render PR comment
         if: always() && github.event_name == 'pull_request'
-        run: npx evalgate comment --json .evalgate/result.json --out comment.md --artifact evalgate-result
+        env:
+          BASELINE_FOUND: ${{ steps.baseline.outputs.found }}
+        run: |
+          if [ "$BASELINE_FOUND" = "true" ]; then
+            npx evalgate comment --json .evalgate/result.json --baseline baseline.json --out comment.md --artifact evalgate-result
+          else
+            npx evalgate comment --json .evalgate/result.json --out comment.md --artifact evalgate-result
+          fi
 
       # --edit-last keeps one comment updated in place. Stacking a new comment
       # per push is how a reviewer learns to scroll past all of them.
