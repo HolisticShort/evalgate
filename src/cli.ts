@@ -6,6 +6,7 @@
  *   evalgate report --json <artifact>
  *   evalgate drift  [--history <path>] [--suite <name>] [--window <n>] [--threshold <n>] [--gate]
  *   evalgate calibrate --set <path> --judge <module> [--json <path>]
+ *   evalgate comment [--json <artifact>] [--baseline <json>] [--out <path>]
  *
  * Exit codes: 0 pass · 1 gate failed · 2 config/runtime error.
  * Config errors are distinct from quality failures — a broken suite reported as
@@ -26,6 +27,7 @@ import { run } from './runner.js'
 import { calibrate, validateSpread } from './calibration.js'
 import { FileCache } from './cache.js'
 import { consoleReporter } from './reporters/console.js'
+import { prComment } from './reporters/comment.js'
 import { reportCalibration } from './reporters/calibration.js'
 import { reportDrift } from './reporters/drift.js'
 import { historyRecord } from './reporters/json.js'
@@ -43,6 +45,8 @@ interface Args {
   json: string | undefined
   set: string | undefined
   judge: string | undefined
+  out: string | undefined
+  artifact: string | undefined
   history: string | undefined
   window: number | undefined
   threshold: number | undefined
@@ -60,6 +64,8 @@ function parseArgs(argv: string[]): Args {
     json: undefined,
     set: undefined,
     judge: undefined,
+    out: undefined,
+    artifact: undefined,
     history: undefined,
     window: undefined,
     threshold: undefined,
@@ -74,6 +80,8 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--json') args.json = argv[++i]
     else if (a === '--set') args.set = argv[++i]
     else if (a === '--judge') args.judge = argv[++i]
+    else if (a === '--out') args.out = argv[++i]
+    else if (a === '--artifact') args.artifact = argv[++i]
     else if (a === '--history') args.history = argv[++i]
     else if (a === '--window') args.window = num(a, argv[++i])
     else if (a === '--threshold') args.threshold = num(a, argv[++i])
@@ -169,6 +177,34 @@ async function loadBaselines(path?: string): Promise<Map<string, SuiteResult>> {
     process.stderr.write(`warning: could not read baseline at ${path} — regression gate will be skipped\n`)
   }
   return map
+}
+
+/**
+ * Renders the PR comment. Always exits 0 — rendering a report about a failing
+ * suite is not itself a failure, and CI needs this step to succeed so the
+ * comment actually gets posted on the run that needed it most.
+ */
+async function cmdComment(argv: string[]): Promise<ExitCode> {
+  const args = parseArgs(argv)
+  const results = await readResults(args.json ?? RESULT_PATH)
+  const baseline = args.baseline ? await readResults(args.baseline).catch(() => undefined) : undefined
+
+  const body = prComment(results, {
+    ...(baseline ? { baseline } : {}),
+    ...(args.artifact !== undefined ? { artifact: args.artifact } : {}),
+  })
+
+  if (args.out) await writeFile(args.out, body, 'utf8')
+  else process.stdout.write(`${body}\n`)
+  return 0
+}
+
+async function readResults(path: string): Promise<SuiteResult[]> {
+  const raw = await readFile(path, 'utf8').catch(() => {
+    throw new ConfigError(`could not read results at ${path} — run \`evalgate run\` first`)
+  })
+  const parsed = JSON.parse(raw) as SuiteResult[] | SuiteResult
+  return Array.isArray(parsed) ? parsed : [parsed]
 }
 
 async function cmdReport(argv: string[]): Promise<ExitCode> {
@@ -296,15 +332,18 @@ async function main(argv: string[]): Promise<ExitCode> {
       return cmdRun(rest)
     case 'report':
       return cmdReport(rest)
+    case 'comment':
+      return cmdComment(rest)
     case 'drift':
       return cmdDrift(rest)
     case 'calibrate':
       return cmdCalibrate(rest)
     default:
       process.stderr.write(
-        `usage: evalgate <run|report|drift|calibrate> [options]\n` +
+        `usage: evalgate <run|report|comment|drift|calibrate> [options]\n` +
           `  run       --suite <dir> --sut <module> [--baseline <json>] [--no-cache] [--json <path>]\n` +
           `  report    --json <artifact>\n` +
+          `  comment   [--json <artifact>] [--baseline <json>] [--out <path>] [--artifact <name>]\n` +
           `  drift     [--history <path>] [--suite <name>] [--window <n>] [--threshold <n>] [--gate] [--json <path>]\n` +
           `  calibrate --set <path> --judge <module> [--json <path>]\n`,
       )

@@ -342,8 +342,37 @@ Exit codes: `0` pass · `1` gate failed · `2` config or runtime error.
 Config errors are distinct from quality failures — a broken suite must never be reported as a quality
 regression, because that's how teams learn to ignore the check.
 
-Output: console summary, GitHub annotations on the failing case, and a JSON artifact for the PR comment.
-The PR comment shows the delta table and the failing claims — the thing a reviewer reads in five seconds.
+Output: console summary, a JSON artifact, and a PR comment. GitHub annotations on the failing case remain
+deferred.
+
+### The PR comment
+
+```
+evalgate comment [--json <artifact>] [--baseline <json>] [--out <path>] [--artifact <name>]
+```
+
+The comment shows the verdict, the delta table, and the failing claims — the thing a reviewer reads in
+five seconds. Four decisions, each defending against a way this kind of comment goes bad:
+
+- **One comment, updated in place.** The body carries a stable `<!-- evalgate:report -->` marker and CI
+  posts with `--edit-last`. Stacking a new comment per push is how a reviewer learns to scroll past all of
+  them.
+- **Truncation is announced.** GitHub rejects bodies over 65,536 characters. Detail blocks are dropped
+  worst-kept-first and the comment states how many it dropped and which artifact holds them. A body
+  silently cut at the limit reads as though nothing else was wrong, which is the one thing this comment
+  must never imply. The verdict, gates, and delta table are never dropped.
+- **A deleted case is reported as `removed`.** Deleting a failing case is a way to make a gate pass, and it
+  should cost a line in the review rather than disappearing from the diff of scores.
+- **A new case is `new`, not `+0.40`.** Same rule as drift's absent-vs-zero: never render a comparison that
+  was never made. With no baseline at all, the delta columns are omitted rather than filled with em-dashes.
+
+`comment` always exits 0. Rendering a report about a failing suite is not itself a failure, and the step
+has to succeed for the comment to get posted on the run that needed it most — the verdict is `run`'s job
+and stays there.
+
+Fork PRs get a read-only token and are skipped rather than failing on a permissions error nobody can fix.
+Posting from a fork needs a `workflow_run` job, which is a deliberate decision about trust boundaries and
+not something to enable by default.
 
 ---
 
@@ -370,9 +399,10 @@ Honest list. These aren't decided.
 `semanticSimilarity` · `rubric` · `grounded` · median-of-n sampling with variance surfacing ·
 all three threshold gates plus an implicit `criticalAssertions` gate · content-addressed cache
 (memory + file) · console + JSON reporters · history records · `drift` CLI · `calibrate` CLI with
-agreement publishing · suite loader with strict validation · GitHub Action. 76 tests, no network required.
+agreement publishing · PR-comment reporter · suite loader with strict validation · GitHub Actions
+workflows. 90 tests, no network required.
 
-**Deferred.** PR-comment reporter · `consistency` assertion · `latency`/`cost` assertions ·
+**Deferred.** GitHub annotations · `consistency` assertion · `latency`/`cost` assertions ·
 custom-assertion docs.
 
 The point of v0 is that `grounded` works and the gate is cheap enough to leave on. Everything else is

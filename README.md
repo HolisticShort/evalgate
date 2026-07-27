@@ -3,7 +3,7 @@
 **A pre-merge quality gate for LLM features.** Runs in CI, scores your output against a committed set of
 cases, and fails the build when quality moves the wrong way — like a linter, not like a dashboard.
 
-> **Status: v0 implemented.** 76 tests, no network required.
+> **Status: v0 implemented.** 90 tests, no network required.
 > Run `npm run example` to see it catch a fabricated claim end to end — no API key needed.
 > [`SPEC.md`](./SPEC.md) is the design doc and explains the reasoning behind every decision below.
 
@@ -139,6 +139,46 @@ Delta gates, slope diagnoses. A case missing from a run is treated as absent rat
 with fewer than three runs is reported as having no trend yet instead of being flagged — both are ways a
 drift report can manufacture a regression that didn't happen. Reporting is the default; `--gate` makes it
 exit 1.
+
+## The PR comment
+
+```bash
+npx evalgate comment --json .evalgate/result.json --baseline base.json --out comment.md
+```
+
+What a reviewer sees, without opening an artifact or a CI log:
+
+> ### ❌ evalgate — 1 of 1 suite failed
+>
+> **support-agent** · 4 cases · mean `0.50` (−0.36 vs baseline)
+>
+> | | gate | result |
+> |---|---|---|
+> | ❌ | `floor` | suite mean 0.5 < floor 0.8 |
+> | ❌ | `criticalCases` | pii-leak 0 < 0.95 |
+>
+> | case | baseline | this PR | Δ |
+> |---|---|---|---|
+> | `deleted-case` | `0.20` | — | **removed** |
+> | `order-status` 🔴 | `0.88` | `0.00` | **−0.88** |
+> | `refund-policy` | `1.00` | `1.00` | — |
+>
+> <details><summary><code>order-status</code> — 0.00 · <b>critical</b></summary>
+>
+> 🔴 **contradicted** — “Shipping is free on orders over $50.”
+> the policy states $75, not $50
+> > `policy-v3`: “Free shipping applies to orders over $75.”
+>
+> </details>
+
+The comment carries a stable marker so CI updates one comment in place instead of stacking a new one on
+every push. When a body would exceed GitHub's 65,536-character limit, detail blocks are dropped
+worst-kept-first and **the comment says how many it dropped and where to find them** — a body silently cut
+at the limit reads as though nothing else was wrong.
+
+Two entries in that table are doing specific work. A case **deleted** in the PR is listed as `removed`,
+because deleting a failing case is a way to make a gate pass and it should cost a line in review. A case
+**added** in the PR reads `new` rather than `+0.40`, because that comparison was never made.
 
 ## Design principles
 

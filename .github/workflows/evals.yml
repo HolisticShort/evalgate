@@ -8,6 +8,10 @@ on:
 jobs:
   evalgate:
     runs-on: ubuntu-latest
+    # Least privilege: read the repo, write exactly one PR comment, nothing else.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,3 +49,24 @@ jobs:
         with:
           name: evalgate-result
           path: .evalgate/result.json
+
+      # `if: always()` because the comment matters most on the run that failed.
+      # `comment` exits 0 by design — rendering a report about a failure is not
+      # itself a failure, so this step never masks the verdict from `run`.
+      - name: Render PR comment
+        if: always() && github.event_name == 'pull_request'
+        run: npx evalgate comment --json .evalgate/result.json --out comment.md --artifact evalgate-result
+
+      # --edit-last keeps one comment updated in place. Stacking a new comment
+      # per push is how a reviewer learns to scroll past all of them.
+      #
+      # Fork PRs get a read-only token, so this step is skipped there rather
+      # than failing the build on a permissions error nobody can fix. Posting
+      # from a fork needs a `workflow_run` job, which is a deliberate decision
+      # about trust boundaries and not something to enable by default.
+      - name: Post PR comment
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh pr comment "$PR" --body-file comment.md --edit-last --create-if-none

@@ -17,6 +17,9 @@ npm run example        # end-to-end demo run, no API key needed
 npm run example:calibrate   # measure the scripted judge against human scores
 ```
 
+`evalgate comment` renders the PR comment from a `run` artifact; try it with
+`node dist/cli.js comment --json .evalgate/result.json` after `npm run example`.
+
 Tests compile first (`tsconfig.test.json` → `dist-test/`), then run against the compiled JS. To run a single test file:
 
 ```bash
@@ -30,11 +33,11 @@ To filter within a file: `node --test --test-name-pattern 'median' dist-test/tes
 ## Architecture
 
 ```
-CLI (src/cli.ts)         run · report · drift · calibrate
+CLI (src/cli.ts)         run · report · comment · drift · calibrate
 Runner (src/runner.ts)   load → sample → assert → aggregate → gate
 Drift (src/drift.ts)     parse history → window → per-series delta + slope
 Calibration (src/calibration.ts)  fixed output → judge → agreement / bias / correlation
-Assertions (registry) · Cache (content-addressed) · Reporters (console, json, drift, calibration)
+Assertions (registry) · Cache (content-addressed) · Reporters (console, json, comment, drift, calibration)
 Providers                injected at the edge, never imported by core
 ```
 
@@ -63,6 +66,8 @@ These are deliberate and each one has a comment or a SPEC section behind it:
 - **New assertions register in `src/assertions/index.ts`**, they are not added to a switch. Set `cost` correctly — the runner uses it for ordering and budgeting.
 - **Calibration holds the output constant.** A `CalibrationCase` carries a committed `output`; there is no SUT. It scores through `evaluateAssertions` — the same path `run` uses — because calibrating against a parallel scoring implementation measures the wrong thing. A set with no spread (`validateSpread`) and a skipped judged assertion are both config errors, not low scores.
 - **`judgeAgreement` is bound to a judge id.** `run` reads `.evalgate/calibration.json` and publishes agreement only when `stamp.judge === judge.id`; a mismatch warns and publishes nothing. Never loosen this — it exists so a judge swap can't inherit the old judge's credibility.
+- **The PR comment announces its own truncation.** `prComment` drops detail blocks worst-kept-first under a byte budget and states the count plus the artifact name; the verdict, gates, and delta table are never dropped. A silently cut body reads as though nothing else was wrong. It also carries `COMMENT_MARKER` so CI updates one comment in place, renders a deleted case as `removed` (deleting a failing case is a way to pass a gate), and a new case as `new` rather than a delta that was never computed.
+- **`comment` exits 0 even when the suite failed.** Rendering a report about a failure is not a failure, and the CI step must succeed for the comment to post. The verdict belongs to `run`.
 - **Suite discovery skips `kind: calibration` files.** Calibration sets sit alongside suites; `validateSuite` detects a misfiled one and says so by name.
 - **Drift: a case absent from a run is absent, not zero** (that manufactures a cliff out of a suite edit), **fewer than `MIN_POINTS` observations is not a trend** (a new case must not read as a regression), and **history is read in file order, never sorted by `ts`** — it's an append log and append order is the truth.
 

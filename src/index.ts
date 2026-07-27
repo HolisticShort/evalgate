@@ -20,6 +20,7 @@ export {
   type CalibrateOptions,
 } from './calibration.js'
 export { reportCalibration } from './reporters/calibration.js'
+export { prComment, COMMENT_MARKER, GITHUB_COMMENT_LIMIT, type CommentOptions } from './reporters/comment.js'
 export { register, get as getAssertion, registered, byCost } from './assertions/index.js'
 export { cacheKey, cacheEnabled, MemoryCache, FileCache, type Cache } from './cache.js'
 export { loadSuites, validateSuite, loadCalibrationSet, validateCalibrationSet, ConfigError } from './config.js'
