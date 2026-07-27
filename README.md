@@ -303,8 +303,13 @@ where you want that score to stop a merge, and want to be able to defend the num
 ## Getting started
 
 ```bash
-npm install --save-dev evalgate
+npm install --save-dev @holisticconsulting/evalgate
 ```
+
+The package is scoped; the CLI it installs is called `evalgate`. Inside a project that has it as a
+dependency, `npx evalgate` resolves to the local binary. **Outside one it does not** — an unrelated
+`evalgate` package exists on the registry, and `npx` would fetch that instead. Run it from the project
+root, or use `npx @holisticconsulting/evalgate` if you want the name to be unambiguous.
 
 Then three files, in this order:
 

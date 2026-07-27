@@ -1,10 +1,21 @@
 {
-  "name": "evalgate",
-  "version": "0.0.0",
+  "name": "@holisticconsulting/evalgate",
+  "version": "0.1.0",
   "description": "A pre-merge quality gate for LLM features. Scores output against committed cases in CI and fails the build on regression.",
   "type": "module",
   "license": "MIT",
   "author": "Chris Short",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HolisticShort/evalgate.git"
+  },
+  "bugs": {
+    "url": "https://github.com/HolisticShort/evalgate/issues"
+  },
+  "homepage": "https://github.com/HolisticShort/evalgate#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "llm",
     "evals",
@@ -16,12 +27,14 @@
     "quality-gate"
   ],
   "bin": {
-    "evalgate": "./dist/cli.js"
+    "evalgate": "dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "templates",
+    "SPEC.md"
   ],
   "engines": {
     "node": ">=20"

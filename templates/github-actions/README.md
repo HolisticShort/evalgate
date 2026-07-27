@@ -6,8 +6,8 @@ in a project that has installed evalgate as a dependency.
 
 ```bash
 mkdir -p .github/workflows
-cp node_modules/evalgate/templates/github-actions/evals.yml .github/workflows/
-cp node_modules/evalgate/templates/github-actions/calibration.yml .github/workflows/
+cp node_modules/@holisticconsulting/evalgate/templates/github-actions/evals.yml .github/workflows/
+cp node_modules/@holisticconsulting/evalgate/templates/github-actions/calibration.yml .github/workflows/
 ```
 
 ## What you have to supply
