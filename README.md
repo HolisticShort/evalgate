@@ -3,7 +3,7 @@
 **A pre-merge quality gate for LLM features.** Runs in CI, scores your output against a committed set of
 cases, and fails the build when quality moves the wrong way — like a linter, not like a dashboard.
 
-> **Status: v0 implemented.** 90 tests, no network required.
+> **Status: v0 implemented.** 101 tests, no network required.
 > Run `npm run example` to see it catch a fabricated claim end to end — no API key needed.
 > [`SPEC.md`](./SPEC.md) is the design doc and explains the reasoning behind every decision below.
 
@@ -190,7 +190,9 @@ What a reviewer sees, without opening an artifact or a CI log:
 The comment carries a stable marker so CI updates one comment in place instead of stacking a new one on
 every push. When a body would exceed GitHub's 65,536-character limit, detail blocks are dropped
 worst-kept-first and **the comment says how many it dropped and where to find them** — a body silently cut
-at the limit reads as though nothing else was wrong.
+at the limit reads as though nothing else was wrong. On a suite large enough that the delta table alone
+would blow the limit, the table keeps its worst-movement rows and announces the rest: an over-limit body is
+rejected by GitHub outright, and no comment is worse than a shortened one.
 
 Two entries in that table are doing specific work. A case **deleted** in the PR is listed as `removed`,
 because deleting a failing case is a way to make a gate pass and it should cost a line in review. A case
@@ -297,6 +299,39 @@ What evalgate is opinionated about, and where it differs:
 
 If you only need a faithfulness score, take it from one of the libraries above. This exists for the case
 where you want that score to stop a merge, and want to be able to defend the number afterward.
+
+## Getting started
+
+```bash
+npm install --save-dev evalgate
+```
+
+Then three files, in this order:
+
+1. **`evals/<suite>.yaml`** — cases and thresholds, in the shape shown under [Quick look](#quick-look).
+2. **`evals/sut.mjs`** — your system under test, plus a `judge` export if you use `rubric` or `grounded`.
+   evalgate imports no provider SDK; this module is the only thing that talks to a model, so **the API
+   key is yours and never leaves your project**.
+3. **A CI workflow** — copy from [`templates/github-actions/`](./templates/github-actions/), which
+   includes the baseline resolution and PR-comment steps and a README explaining what you have to supply.
+
+```bash
+npx evalgate run --suite evals/ --sut ./evals/sut.mjs
+```
+
+Exit codes: **0 pass · 1 gate failed · 2 config/runtime error.** Wire CI to treat 1 and 2 differently —
+a malformed suite reported as a quality regression is how teams learn to ignore the check.
+
+Then, in rough order of payoff:
+
+```bash
+npx evalgate calibrate --set evals/calibration.yaml --judge ./evals/sut.mjs   # if you use a judge
+npx evalgate run --suite evals/ --sut ./evals/sut.mjs --json .evalgate/baseline.json   # enables the regression gate
+npx evalgate drift --gate                                                     # after ~3 runs of history
+```
+
+Commit `.evalgate/history.jsonl`, `.evalgate/calibration.json`, and `.evalgate/baseline.json`. Ignore
+`.evalgate/cache/` and `.evalgate/result.json` — those are machine-local.
 
 ## Status
 

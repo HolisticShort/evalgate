@@ -83,6 +83,69 @@ test('assertions are reported in declaration order, not execution order', async 
   assert.deepEqual(r.cases[0]?.assertions.map(a => a.type), ['length', 'contains'])
 })
 
+test('two assertions of the same type are scored and reported separately', async () => {
+  // Results used to be matched back to declaration order by type, which
+  // collapsed same-type assertions onto one result: the second was dropped and
+  // the first counted twice, silently changing the score.
+  const s = suite({
+    samples: 1,
+    thresholds: { floor: 0.8 },
+    cases: [
+      {
+        id: 'c',
+        input: { prompt: 'p' },
+        assertions: [
+          { type: 'contains', terms: ['hello'] },
+          { type: 'contains', terms: ['absent'] },
+        ] as AssertionConfig[],
+      },
+    ],
+  })
+  const r = await run({ suite: s, sut: fakeSut(['hello world']) })
+  assert.deepEqual(r.cases[0]?.assertions.map(a => a.score), [1, 0])
+  assert.equal(r.cases[0]?.score, 0.5, 'one hit and one miss is 0.5, not 1')
+  assert.equal(r.passed, false)
+})
+
+test('a critical flag on the second assertion of a type is not lost', async () => {
+  // The worst form of the same bug: a leak reported clean and the gate green.
+  const s = suite({
+    samples: 1,
+    cases: [
+      {
+        id: 'leak',
+        input: { prompt: 'p' },
+        assertions: [{ type: 'noPII' }, { type: 'noPII', patterns: ['SECRET-\\d+'] }] as AssertionConfig[],
+      },
+    ],
+  })
+  const r = await run({ suite: s, sut: fakeSut(['here is SECRET-42']) })
+  assert.equal(r.cases[0]?.critical, true)
+  assert.equal(r.passed, false)
+  assert.ok(r.gates.some(g => g.gate === 'criticalAssertions' && !g.passed))
+})
+
+test('the short-circuit still fires when the critical assertion is a duplicate type', async () => {
+  const judge = fakeJudge([])
+  const s = suite({
+    samples: 1,
+    cases: [
+      {
+        id: 'leak',
+        input: { prompt: 'p', context: [{ id: 'd', text: 'x' }] },
+        assertions: [
+          { type: 'noPII' },
+          { type: 'noPII', patterns: ['SECRET-\\d+'] },
+          { type: 'grounded' },
+        ] as AssertionConfig[],
+      },
+    ],
+  })
+  const r = await run({ suite: s, sut: fakeSut(['here is SECRET-42']), judge })
+  assert.equal(judge.calls.length, 0, 'grounded must not have spent a judge call')
+  assert.match(r.cases[0]?.assertions[2]?.explanation ?? '', /skipped/)
+})
+
 test('cache prevents re-running the system under test', async () => {
   const cache = new MemoryCache()
   const s = suite({ samples: 2 })

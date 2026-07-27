@@ -1,0 +1,78 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+
+      # The example is a real end-to-end run against a scripted system and judge,
+      # and it is SUPPOSED to fail the gate — it ships a fabricated claim and a
+      # leaked address. Exit 1 is the passing outcome; 0 means the gate stopped
+      # catching them, and 2 means the CLI itself broke.
+      - name: Example run catches the seeded defects
+        run: |
+          set +e
+          npm run example
+          code=$?
+          set -e
+          if [ "$code" -ne 1 ]; then
+            echo "::error::expected the example suite to fail its gate (exit 1), got exit $code"
+            exit 1
+          fi
+
+      - name: Judge calibration
+        run: npm run example:calibrate
+
+      # The reporting commands read the artifacts the example just produced.
+      # A CLI that runs but cannot render its own output is still broken.
+      - name: Reporting commands render the run
+        run: |
+          node dist/cli.js comment --json .evalgate/result.json --out /dev/null
+          node dist/cli.js drift
+          node dist/cli.js report --json .evalgate/result.json || [ $? -eq 1 ]
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      # Install the packed tarball into a clean project — the path a new user
+      # actually takes. Catches a missing `files` entry or an unbuilt `dist`,
+      # which no amount of in-repo testing will surface.
+      - name: Install the packed tarball as a consumer would
+        run: |
+          tarball="$(npm pack --silent)"
+          mkdir -p /tmp/consumer && cd /tmp/consumer
+          npm init -y > /dev/null
+          npm install "$GITHUB_WORKSPACE/$tarball"
+          npx evalgate 2>&1 | grep -q 'usage: evalgate'

@@ -164,14 +164,20 @@ async function cmdRun(argv: string[]): Promise<ExitCode> {
 }
 
 /**
- * Renders the PR comment. Always exits 0 — rendering a report about a failing
- * suite is not itself a failure, and CI needs this step to succeed so the
- * comment actually gets posted on the run that needed it most.
+ * Renders the PR comment. Exits 0 regardless of the suite verdict — rendering a
+ * report about a failing suite is not itself a failure, and CI needs this step
+ * to succeed so the comment gets posted on the run that needed it most.
+ *
+ * An unreadable artifact or baseline is still a config error (exit 2): that is
+ * a broken pipeline, not a quality result.
  */
 async function cmdComment(argv: string[]): Promise<ExitCode> {
   const args = parseArgs(argv)
   const results = await readResults(args.json ?? RESULT_PATH)
-  const baseline = args.baseline ? await readResults(args.baseline).catch(() => undefined) : undefined
+  // A --baseline that will not load is a config error here too. Swallowing it
+  // renders the no-baseline layout, so a typo silently removes the delta column
+  // from the comment and nothing says the comparison never happened.
+  const baseline = args.baseline ? await readResults(args.baseline) : undefined
 
   const body = prComment(results, {
     ...(baseline ? { baseline } : {}),

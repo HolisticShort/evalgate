@@ -150,19 +150,26 @@ export async function evaluateAssertions(
   output: string | Record<string, unknown>,
   providers: Providers,
 ): Promise<(AssertionResult & { type: string })[]> {
-  const ordered = byCost(c.assertions as { type: string }[]) as AssertionConfig[]
-  const results: (AssertionResult & { type: string })[] = []
+  // Results are parked at their declaration index, never matched back by type.
+  // Matching by type collapses two assertions of the same type onto one result:
+  // the second is dropped and the first is counted twice, which silently changes
+  // the case score and can lose a `critical` flag entirely.
+  const declared = c.assertions as { type: string }[]
+  const ordered = byCost(declared.map((a, index) => ({ ...a, index })))
+  const results: (AssertionResult & { type: string })[] = new Array(declared.length)
+  let critical = false
 
-  for (const config of ordered) {
+  for (const { index, ...rest } of ordered) {
+    const config = rest as unknown as AssertionConfig
     // Short-circuit: once a free assertion has flagged the case critical, the
     // expensive ones cannot change the outcome and shouldn't spend a token.
-    if (results.some(r => r.critical) && getAssertion(config.type).cost === 'expensive') {
-      results.push({
+    if (critical && getAssertion(config.type).cost === 'expensive') {
+      results[index] = {
         type: config.type,
         score: 0,
         explanation: 'skipped — case already failed a critical assertion',
         skipped: true,
-      })
+      }
       continue
     }
 
@@ -173,14 +180,13 @@ export async function evaluateAssertions(
       ...(providers.judge ? { judge: providers.judge } : {}),
       ...(providers.embed ? { embed: providers.embed } : {}),
     })
-    results.push({ ...result, type: config.type })
+    if (result.critical) critical = true
+    results[index] = { ...result, type: config.type }
   }
 
-  // Restore declaration order for reporting — cost order is an execution
-  // detail, and a report that reshuffles the user's suite is confusing.
-  return (c.assertions as { type: string }[])
-    .map(a => results.find(r => r.type === a.type))
-    .filter((r): r is AssertionResult & { type: string } => r !== undefined)
+  // Declaration order, by construction — cost order is an execution detail, and
+  // a report that reshuffles the user's suite is confusing.
+  return results as (AssertionResult & { type: string })[]
 }
 
 // ---------------------------------------------------------------------------

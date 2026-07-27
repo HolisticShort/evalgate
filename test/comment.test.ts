@@ -174,3 +174,25 @@ test('pipes in case ids and claims cannot break out of a table cell', () => {
   const body = prComment([result({ cases: [kase({ caseId: 'a|b', score: 0.5 })] })])
   assert.match(body, /a\\\|b/)
 })
+
+test('a suite too large for the body limit still produces a postable comment', () => {
+  // A body over GitHub's limit is rejected outright, and no comment at all is
+  // strictly worse than a shortened one.
+  const many = Array.from({ length: 4000 }, (_, i) =>
+    kase({ caseId: `case-with-a-fairly-long-identifier-${i}`, score: i / 4000 }),
+  )
+  const body = prComment([result({ passed: false, cases: many })])
+
+  assert.ok(body.length <= GITHUB_COMMENT_LIMIT, `body was ${body.length} characters`)
+  assert.match(body, /❌ evalgate/, 'the verdict is never dropped')
+  assert.match(body, /more cases not shown/, 'the comment announces its own truncation')
+})
+
+test('the delta table keeps its worst rows when it has to shed some', () => {
+  const many = Array.from({ length: 4000 }, (_, i) =>
+    kase({ caseId: `case-${i}`, score: i === 0 ? 0 : 1 }),
+  )
+  const body = prComment([result({ passed: false, cases: many })])
+  // Rows are sorted worst-movement first, so the one that actually broke stays.
+  assert.match(body, /`case-0`/)
+})

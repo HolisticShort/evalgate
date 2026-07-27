@@ -17,3 +17,6 @@ dist/
 .env.*
 .DS_Store
 dist-test/
+
+# npm pack output
+*.tgz

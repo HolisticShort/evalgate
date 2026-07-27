@@ -37,7 +37,7 @@ export function prComment(results: SuiteResult[], opts: CommentOptions = {}): st
     head.push('', suiteHeadline(r, baseline.get(r.suite)), '', gateTable(r))
 
     const rows = deltaRows(r, baseline.get(r.suite))
-    if (rows.length > 0) head.push('', deltaTable(rows, baseline.has(r.suite)))
+    if (rows.length > 0) head.push('', deltaTable(rows, baseline.has(r.suite), limit))
 
     // Worst first — the reviewer is looking for what broke, and the detail
     // blocks are what gets dropped first when the body runs out of room.
@@ -78,7 +78,19 @@ function assemble(head: string[], details: string[], limit: number, artifact?: s
     )
   }
 
-  return body.join('\n')
+  return clampToLimit(body.join('\n'), limit)
+}
+
+/**
+ * Last-resort clamp. Everything above trims itself, but a pathological input —
+ * one enormous gate detail, hundreds of suites — must still produce a body
+ * GitHub will accept. Over the limit the whole comment is rejected and the
+ * reviewer sees nothing at all.
+ */
+function clampToLimit(body: string, limit: number): string {
+  if (body.length <= limit) return body
+  const notice = '\n\n> Report truncated to fit GitHub’s comment limit — see the run artifact for full detail.'
+  return body.slice(0, Math.max(0, limit - notice.length)) + notice
 }
 
 function headline(results: SuiteResult[]): string {
@@ -150,21 +162,42 @@ function movement(row: DeltaRow): number {
   return row.after - row.before
 }
 
-function deltaTable(rows: DeltaRow[], hasBaseline: boolean): string {
+/**
+ * The delta table is never dropped wholesale, but a suite with thousands of
+ * cases can outgrow the body limit on its own. Past `DELTA_TABLE_SHARE` of the
+ * budget the table keeps its worst rows — the ones it is sorted for — and says
+ * how many it left out. A body over the limit is rejected outright by GitHub,
+ * and no comment is strictly worse than a shortened one.
+ */
+const DELTA_TABLE_SHARE = 0.5
+
+function deltaTable(rows: DeltaRow[], hasBaseline: boolean, limit: number): string {
   // Without a baseline there is no delta to show, and two columns of em-dashes
   // read as missing data rather than as a comparison that was never possible.
   const out = hasBaseline
     ? ['| case | baseline | this PR | Δ |', '|---|---|---|---|']
     : ['| case | score |', '|---|---|']
 
+  const budget = limit * DELTA_TABLE_SHARE
+  let size = out.join('\n').length
+  let kept = 0
+
   for (const row of rows) {
     const flags = [row.critical ? ' 🔴' : '', row.unstable ? ' ⚠️' : ''].join('')
     const name = `\`${escape(row.id)}\`${flags}`
-    out.push(
-      hasBaseline
-        ? `| ${name} | ${cell(row.before)} | ${cell(row.after)} | ${delta(row, hasBaseline)} |`
-        : `| ${name} | ${cell(row.after)} |`,
-    )
+    const line = hasBaseline
+      ? `| ${name} | ${cell(row.before)} | ${cell(row.after)} | ${delta(row, hasBaseline)} |`
+      : `| ${name} | ${cell(row.after)} |`
+
+    if (size + line.length > budget) break
+    out.push(line)
+    size += line.length + 1
+    kept++
+  }
+
+  const dropped = rows.length - kept
+  if (dropped > 0) {
+    out.push('', `> ${dropped} more case${dropped === 1 ? '' : 's'} not shown — worst movement is listed first.`)
   }
   return out.join('\n')
 }
