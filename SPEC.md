@@ -127,14 +127,16 @@ suite made entirely of LLM-judge assertions is expensive, slow, and circular.
 | Assertion | Score model |
 |---|---|
 | `rubric` | LLM judge scores output against a written rubric, returns a structured verdict |
-| `grounded` | **the distinctive one — see below** |
+| `grounded` | claim-level attribution against the source documents — see below |
 
 ---
 
 ## `grounded` — the assertion this library exists for
 
-Most eval tooling can tell you whether output *looks* right. Almost none can tell you whether output is
-*entitled to its claims*.
+Claim-level faithfulness scoring is well-trodden — Ragas, DeepEval, TruLens, and Promptfoo all ship a
+version of it. What this design is after is not a better metric but a different destination for it: a
+pre-merge gate, with contradiction separated from absence, and the claim-level breakdown put in front of a
+reviewer rather than on a dashboard.
 
 The rule, stated plainly: **an unsourced factual claim is a defect, not a stylistic issue.** If a feature
 summarizes documents, answers from a knowledge base, or generates a report from data, then every factual
@@ -189,7 +191,7 @@ failed PR check and seeing exactly which sentence the model made up.
 ## Who judges the judge
 
 `rubric` and `grounded` use a model to evaluate a model. That is circular unless the circle is closed
-deliberately, and most tools that do this never mention it. So:
+deliberately. Plenty of tools acknowledge the problem; few ship a way to measure it. So:
 
 1. **The judge model is pinned** — explicit version, explicit params, `temperature: 0`. It is
    infrastructure, not a place to save money. It does not float when the application model changes.

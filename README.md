@@ -22,20 +22,31 @@ having nothing.
 evalgate's answer: **assertions return scores, not booleans**, and verdicts are computed at the suite level
 against thresholds you commit to your repo.
 
-## What makes it different
+## `grounded`
 
-**`grounded`** — an assertion that checks whether output is *entitled to its claims*.
-
-Most eval tooling can tell you whether output looks right. Almost none can tell you whether the model made
-something up. `grounded` decomposes output into atomic factual claims, attributes each one against the
-source documents the model was given, and scores what survives:
+An assertion that checks whether output is *entitled to its claims*. It decomposes output into atomic
+factual claims, attributes each one against the source documents the model was given, and scores what
+survives:
 
 ```
 score = supported / (supported + unsupported + contradicted)
 ```
 
-The number isn't the point. The point is a reviewer opening a failed check and seeing exactly which
-sentence the model invented, and which source span contradicts it.
+**Claim-level faithfulness scoring is not new.** Ragas, DeepEval, TruLens, and Promptfoo all ship a version
+of it, and if you only need the metric you should use one of them. What differs here is what happens to the
+number:
+
+- **It gates.** The score feeds the same threshold policy as everything else and fails the build pre-merge,
+  rather than landing on a dashboard someone reviews later.
+- **Contradiction is tracked separately from absence.** An unsupported claim is a gap; a contradicted claim
+  is a lie. They're different bugs with different severities, and `contradictionIsCritical` can fail a case
+  outright on one contradiction while tolerating ten omissions.
+- **The breakdown reaches the reviewer.** The failing claim, the judge's reasoning, and the contradicting
+  source span go into the PR comment. The number isn't the point — seeing exactly which sentence the model
+  invented is.
+- **A dropped verdict counts against the score.** If the judge returns fewer verdicts than there were
+  claims, the missing ones are recorded as `unsupported` rather than shrinking the denominator. Otherwise
+  an unreliable judge raises the grounding score by answering less.
 
 The rule underneath it: **an unsourced factual claim is a defect, not a stylistic issue.**
 
@@ -212,7 +223,8 @@ Custom assertions register alongside the built-ins and get the same scoring, cac
 ## Who judges the judge
 
 `rubric` and `grounded` use a model to evaluate a model. That's circular unless the circle is closed
-deliberately, and most tools that do it never mention it. So the judge gets its own test suite:
+deliberately. Plenty of tools acknowledge the problem; few ship a way to measure it. Here the judge gets
+its own test suite:
 
 ```bash
 npx evalgate calibrate --set evals/calibration.yaml --judge ./evals/sut.mjs
@@ -258,6 +270,33 @@ calibrated is a random number generator with good manners.
 - Not a benchmark suite. It won't tell you whether one model beats another; it tells you whether *your*
   application got worse than it was last week.
 - Not a framework. No chains, no agent runtime.
+
+## Prior art, and when to use something else
+
+This is a crowded space and evalgate is not the first thing in it. Use one of these instead if it fits you
+better:
+
+| | |
+|---|---|
+| **Promptfoo** | The closest neighbor — open source, YAML suites, CI-oriented, a much larger assertion library, plus red-teaming. If you want breadth and maturity today, start there. |
+| **DeepEval · Ragas** | Python-native metric libraries with faithfulness/hallucination scoring. If your tests already live in pytest, these fit your stack better than a Node CLI. |
+| **Braintrust · LangSmith · Langfuse · Phoenix** | Hosted platforms with tracing, datasets, and production monitoring. If you need to watch what's happening in production, evalgate is explicitly not that. |
+
+What evalgate is opinionated about, and where it differs:
+
+- **The output is an exit code, not a dashboard.** Thresholds, suites, and baselines are files reviewed in
+  PRs. The whole thing is designed to fail a build before merge and to be cheap enough that nobody turns
+  it off.
+- **The judge is measured, not assumed.** `evalgate calibrate` scores an LLM judge against human-scored
+  cases, gates a judge change on agreement and bias, and publishes the number alongside every judged score.
+  Plenty of tools name the judge-judging-a-judge problem; few ship a way to quantify it.
+- **It tries hard not to lie to you.** A missing baseline isn't a pass. A case absent from a run isn't a
+  zero. A dropped judge verdict isn't a smaller denominator. A truncated PR comment says it truncated. A
+  config error exits 2, never 1. Every one of those is a way an eval tool can report green on a regression,
+  and each is a deliberate decision documented in [`SPEC.md`](./SPEC.md).
+
+If you only need a faithfulness score, take it from one of the libraries above. This exists for the case
+where you want that score to stop a merge, and want to be able to defend the number afterward.
 
 ## Status
 
