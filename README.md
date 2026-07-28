@@ -3,7 +3,7 @@
 **A pre-merge quality gate for LLM features.** Runs in CI, scores your output against a committed set of
 cases, and fails the build when quality moves the wrong way — like a linter, not like a dashboard.
 
-> **Status: v0 implemented.** 101 tests, no network required.
+> **Status: v0 implemented.** 137 tests, no network required.
 > Run `npm run example` to see it catch a fabricated claim end to end — no API key needed.
 > [`SPEC.md`](./SPEC.md) is the design doc and explains the reasoning behind every decision below.
 
@@ -122,12 +122,67 @@ assertion (an explicit override) → `retrieved` → the suite's `input.context`
 unchanged version replays the previous retrieval verbatim. In a RAG system the index is part of the system;
 if reindexing can't move the version, a reindex goes ungated.
 
+### Scoring the retriever
+
+`grounded` asks whether the answer was entitled to its claims *given what the model was handed*. It cannot
+see a retriever that surfaced the wrong document — the generator will faithfully summarize whatever it got,
+and score 1.00 doing it. That failure has no other symptom.
+
+```yaml
+  - id: wrong-document
+    input:
+      prompt: "How do I return a damaged item?"
+    expectedDocs: [returns-v2]      # what a correct retrieval must surface
+    assertions:
+      - type: contextRecall
+      - type: contextPrecision
+      - type: grounded
+```
+
+That case is in `npm run example`, and it is the point of the whole feature:
+
+```
+  • wrong-document  0.33
+      contextRecall — 0/1 expected documents retrieved — missing returns-v2
+      contextPrecision — 0/2 retrieved documents were expected — 2 unlabelled: shipping-v1, hours-v1
+```
+
+`grounded` scored that case **1.00** and was right to. Recall is what caught it.
+
+| | |
+|---|---|
+| `contextRecall` | Fraction of `expectedDocs` the retriever surfaced. The highest-value retrieval check, and free. `k` scores recall@k — a document ranked 48th was retrieved in name only. |
+| `contextPrecision` | Fraction of retrieved documents that were expected. Catches widening top-k until recall looks good and paying for the extra chunks on every request forever. |
+
+Both are deterministic, cost nothing, and refuse to run without a `retrieved` set rather than falling back
+to the suite's declared context — scoring a retriever against the guess that was written to describe it is
+a tautology that reports 1.00 forever. An empty retrieval scores **0** for precision, not a vacuous 1: "no
+irrelevant documents were returned" is technically true of a dead retriever.
+
+`expectedDocs` sits on the case, since recall and precision are two views of one labelling; an assertion
+may override it. Precision scores against that labelling, so a genuinely useful but *unlabelled* document
+counts against you — label a case's relevant set completely rather than listing only the doc you had in mind.
+
+### Sources from files
+
+A retrieval corpus doesn't belong inline in YAML:
+
+```yaml
+    context:
+      - id: returns-v2
+        textFile: ./docs/returns-v2.md
+```
+
+Resolved relative to the suite file, so a suite means the same thing wherever `evalgate` runs from. Setting
+both `text` and `textFile` is a config error rather than a silent preference, and a YAML anchor shared
+across cases reads the file once.
+
 Real output from `npm run example`:
 
 ```
-support-agent   4 cases · 3 samples · 0 cached, 12 executed
+support-agent   5 cases · 3 samples · 0 cached, 15 executed
 
-  ✗ floor              suite mean 0.5 < floor 0.8
+  ✗ floor              suite mean 0.467 < floor 0.8
   ✓ regression         no baseline available — regression gate skipped (not evaluated)
   ✗ criticalCases      pii-leak 0 < 0.95
   ✗ criticalAssertions order-status, pii-leak
@@ -145,6 +200,9 @@ support-agent   4 cases · 3 samples · 0 cached, 12 executed
   ✗ pii-leak  0.00  CRITICAL
       noPII — PII detected: email(da************om)
       grounded — skipped — case already failed a critical assertion
+  • wrong-document  0.33
+      contextRecall — 0/1 expected documents retrieved — missing returns-v2
+      contextPrecision — 0/2 retrieved documents were expected — 2 unlabelled: shipping-v1, hours-v1
 
   FAIL
 ```
@@ -242,7 +300,7 @@ expensive, and circular.
 
 | | |
 |---|---|
-| **Deterministic** | `schema` · `contains` · `notContains` · `regex` · `length` · `latency` · `cost` · `noPII` |
+| **Deterministic** | `schema` · `contains` · `notContains` · `regex` · `length` · `latency` · `cost` · `noPII` · `contextRecall` · `contextPrecision` |
 | **Statistical** | `semanticSimilarity` · `consistency` |
 | **Judged** | `rubric` · `grounded` |
 

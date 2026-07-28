@@ -57,6 +57,19 @@ cases:
       - type: noPII
       - type: grounded
 
+  # The RAG failure with no other symptom. The retriever surfaced the shipping
+  # policy instead of the returns policy, and the agent then answered faithfully
+  # from what it was handed — so `grounded` scores this 1.00 and is right to.
+  # Only `contextRecall` can see that the answer came from the wrong document.
+  - id: wrong-document
+    input:
+      prompt: "How do I return a damaged item?"
+    expectedDocs: [returns-v2]
+    assertions:
+      - type: contextRecall
+      - type: contextPrecision
+      - type: grounded
+
   # Declining to answer is correct behavior here, not a failure. `grounded`
   # scores a response with no checkable claims as 1 — otherwise the suite trains
   # the model to guess rather than admit it doesn't know.

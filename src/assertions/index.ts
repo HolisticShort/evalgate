@@ -1,5 +1,6 @@
 import type { Assertion } from '../types.js'
 import { grounded } from './grounded.js'
+import { contextRecall, contextPrecision } from './retrieval.js'
 import { rubric } from './rubric.js'
 import { semanticSimilarity } from './semantic.js'
 import { schema, contains, notContains, regex, length, noPII } from './deterministic.js'
@@ -41,6 +42,18 @@ export function byCost<T extends { type: string }>(configs: T[]): T[] {
     .map(({ c }) => c)
 }
 
-for (const a of [schema, contains, notContains, regex, length, noPII, semanticSimilarity, rubric, grounded]) {
+for (const a of [
+  schema,
+  contains,
+  notContains,
+  regex,
+  length,
+  noPII,
+  contextRecall,
+  contextPrecision,
+  semanticSimilarity,
+  rubric,
+  grounded,
+]) {
   register(a as Assertion<any>)
 }

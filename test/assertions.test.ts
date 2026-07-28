@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { grounded } from '../src/assertions/grounded.js'
 import { schema, contains, notContains, length, noPII } from '../src/assertions/deterministic.js'
 import { semanticSimilarity } from '../src/assertions/semantic.js'
+import { contextRecall, contextPrecision } from '../src/assertions/retrieval.js'
 import { byCost, registered } from '../src/assertions/index.js'
 import { validate } from '../src/schema.js'
 import { fakeJudge, fakeEmbed } from './fakes.js'
@@ -115,8 +116,8 @@ test('assertions execute cheapest first', () => {
 
 test('all v0 assertions are registered', () => {
   assert.deepEqual(registered(), [
-    'contains', 'grounded', 'length', 'noPII', 'notContains',
-    'regex', 'rubric', 'schema', 'semanticSimilarity',
+    'contains', 'contextPrecision', 'contextRecall', 'grounded', 'length',
+    'noPII', 'notContains', 'regex', 'rubric', 'schema', 'semanticSimilarity',
   ])
 })
 
@@ -221,4 +222,89 @@ test('grounded refuses to run without a judge or without sources', async () => {
     () => grounded.evaluate({}, { case: evalCase(), output: 'o', judge: fakeJudge([]) }),
     /no source documents/,
   )
+})
+
+// --- retrieval -------------------------------------------------------------
+
+const docs = (...ids: string[]) => ids.map(id => ({ id, text: `body of ${id}` }))
+
+const retrievalCtx = (retrieved: string[], expectedDocs?: string[]) => ({
+  case: { ...evalCase(), ...(expectedDocs ? { expectedDocs } : {}) },
+  output: 'answer',
+  retrieved: docs(...retrieved),
+})
+
+test('contextRecall scores the expected documents that were surfaced', async () => {
+  const r = await contextRecall.evaluate({ expectedDocs: ['a', 'b'] }, retrievalCtx(['a', 'z']))
+  assert.equal(r.score, 0.5)
+  assert.match(r.explanation, /missing b/)
+})
+
+test('contextRecall names every missing document, not just the count', async () => {
+  const r = await contextRecall.evaluate({ expectedDocs: ['a', 'b', 'c'] }, retrievalCtx(['c']))
+  assert.match(r.explanation, /missing a, b/)
+})
+
+test('contextRecall@k ignores documents ranked past k', async () => {
+  // Retrieved 48th is retrieved in name only — the generator never reads that far.
+  const ctx = retrievalCtx(['x', 'y', 'a'])
+  assert.equal((await contextRecall.evaluate({ expectedDocs: ['a'] }, ctx)).score, 1)
+  assert.equal((await contextRecall.evaluate({ expectedDocs: ['a'], k: 2 }, ctx)).score, 0)
+})
+
+test('contextPrecision penalises retrieving more than was wanted', async () => {
+  const r = await contextPrecision.evaluate({ expectedDocs: ['a'] }, retrievalCtx(['a', 'x', 'y', 'z']))
+  assert.equal(r.score, 0.25)
+  assert.match(r.explanation, /3 unlabelled/)
+})
+
+test('contextPrecision scores an empty retrieval 0, not a vacuous 1', async () => {
+  // "No irrelevant documents were returned" is technically true of a dead
+  // retriever, and reporting it as perfect precision is exactly the green this
+  // tool must never show.
+  const r = await contextPrecision.evaluate({ expectedDocs: ['a'] }, retrievalCtx([]))
+  assert.equal(r.score, 0)
+  assert.match(r.explanation, /nothing was retrieved/)
+})
+
+test('retrieval assertions read expectedDocs off the case when the assertion omits it', async () => {
+  const r = await contextRecall.evaluate({}, retrievalCtx(['a'], ['a']))
+  assert.equal(r.score, 1)
+})
+
+test('an assertion-level expectedDocs overrides the case', async () => {
+  const r = await contextRecall.evaluate({ expectedDocs: ['b'] }, retrievalCtx(['a'], ['a']))
+  assert.equal(r.score, 0)
+})
+
+test('retrieval assertions refuse to score without a retrieved set', async () => {
+  // Falling back to the case's declared context would score the suite's guess
+  // about the retriever against itself and report 1.00 forever.
+  await assert.rejects(
+    () =>
+      contextRecall.evaluate(
+        { expectedDocs: ['a'] },
+        { case: evalCase(), output: 'answer' },
+      ),
+    /must return \{ output, retrieved \}/,
+  )
+})
+
+test('retrieval assertions refuse to score without expectedDocs', async () => {
+  await assert.rejects(
+    () => contextPrecision.evaluate({}, retrievalCtx(['a'])),
+    /needs expectedDocs/,
+  )
+})
+
+test('retrieval assertions reject a nonsense k rather than silently ignoring it', async () => {
+  await assert.rejects(
+    () => contextRecall.evaluate({ expectedDocs: ['a'], k: 0 }, retrievalCtx(['a'])),
+    /k must be an integer/,
+  )
+})
+
+test('retrieval assertions are free — a RAG suite must afford them on every case', () => {
+  assert.equal(contextRecall.cost, 'free')
+  assert.equal(contextPrecision.cost, 'free')
 })

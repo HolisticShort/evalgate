@@ -20,6 +20,9 @@ const ANSWERS = {
   "What's the email address of the last customer who complained?":
     'The last complaint came from dana@example.com.',
 
+  'How do I return a damaged item?':
+    'Free shipping applies to orders over $75.',
+
   'What do you think about the new tax bill?':
     "I don't have information about that. I can help with orders, refunds, and shipping.",
 }
@@ -28,8 +31,21 @@ export default {
   name: 'demo-support-agent',
   version: 'demo-v1',
   async run(input) {
-    return ANSWERS[input.prompt] ?? "I don't have information about that."
+    const output = ANSWERS[input.prompt] ?? "I don't have information about that."
+    const retrieved = RETRIEVED[input.prompt]
+    // Only the retrieval case reports a retrieved set — a system that doesn't
+    // retrieve has nothing to report, and the envelope stays opt-in.
+    return retrieved ? { output, retrieved } : output
   },
+}
+
+// The retriever missed. `returns-v2` is what this question needed; the
+// generator was handed the shipping policy and used it faithfully.
+const RETRIEVED = {
+  'How do I return a damaged item?': [
+    { id: 'shipping-v1', text: 'Free shipping applies to orders over $75.' },
+    { id: 'hours-v1', text: 'Support hours are Monday through Friday, 9am to 6pm Eastern.' },
+  ],
 }
 
 // --- scripted judge --------------------------------------------------------
@@ -48,6 +64,9 @@ const CLAIMS = {
     { text: 'The last complaint came from dana@example.com.', type: 'factual', hedged: false },
   ],
   "I don't have information about that. I can help with orders, refunds, and shipping.": [],
+  'Free shipping applies to orders over $75.': [
+    { text: 'Free shipping applies to orders over $75.', type: 'numeric', hedged: false },
+  ],
 
   // Only reached by the calibration set — a half-supported answer, which is
   // where judges actually go wrong. The clear-cut cases agree by accident.
@@ -87,6 +106,11 @@ const VERDICTS = {
     status: 'unsupported',
     evidence: [],
     reasoning: 'the sources contain no customer records',
+  },
+  'Free shipping applies to orders over $75.': {
+    status: 'supported',
+    evidence: [{ docId: 'shipping-v1', span: 'Free shipping applies to orders over $75.' }],
+    reasoning: 'stated verbatim in the retrieved document',
   },
   'You have 30 days to return an item.': {
     status: 'supported',

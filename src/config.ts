@@ -1,5 +1,5 @@
 import { readFile, readdir } from 'node:fs/promises'
-import { join, extname, resolve } from 'node:path'
+import { join, extname, resolve, dirname } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import type { Suite, EvalCase, CalibrationSet, CalibrationCase } from './types.js'
 
@@ -15,7 +15,9 @@ export async function loadSuites(path: string): Promise<Suite[]> {
   const files = await collect(resolve(path))
   if (files.length === 0) throw new ConfigError(`no suite files found under ${path}`)
 
-  const docs = await Promise.all(files.map(async f => ({ file: f, doc: await parseFile(f) })))
+  const docs = await Promise.all(
+    files.map(async f => ({ file: f, doc: await resolveSourceFiles(await parseFile(f), f) })),
+  )
   // Calibration sets live alongside suites — they describe the same cases and
   // belong in the same review. `kind` keeps `run` from trying to gate on them.
   const suites = docs.filter(d => !(isObject(d.doc) && d.doc['kind'] === 'calibration'))
@@ -37,6 +39,59 @@ async function collect(path: string): Promise<string[]> {
     else if (['.yaml', '.yml', '.json'].includes(extname(e.name))) out.push(full)
   }
   return out.sort()
+}
+
+/**
+ * Replaces `{ id, textFile }` source documents with `{ id, text }`, reading the
+ * file relative to the suite that referenced it.
+ *
+ * Inlining source text works for a policy paragraph and collapses for anything
+ * real: a retrieval corpus is megabytes, and pasting it into YAML produces a
+ * file nobody can review and a diff nobody can read. Paths are resolved against
+ * the suite file rather than the working directory so a suite means the same
+ * thing wherever `evalgate` is invoked from.
+ *
+ * Mutates in place, which is deliberate: YAML anchors (`context: *policy`) parse
+ * to a single shared object, so resolving it once resolves every reference and
+ * the file is read once no matter how many cases share it.
+ */
+async function resolveSourceFiles(doc: unknown, suiteFile: string): Promise<unknown> {
+  const base = dirname(suiteFile)
+
+  const walk = async (node: unknown): Promise<void> => {
+    if (Array.isArray(node)) {
+      await Promise.all(node.map(walk))
+      return
+    }
+    if (!isObject(node)) return
+
+    if ('textFile' in node) {
+      const ref = node['textFile']
+      if (typeof ref !== 'string' || ref.length === 0) {
+        throw new ConfigError(`${suiteFile}: textFile must be a non-empty string`)
+      }
+      // Both keys is ambiguous, and picking one silently means half the readers
+      // of the suite are wrong about what it says.
+      if ('text' in node) {
+        throw new ConfigError(
+          `${suiteFile}: source "${String(node['id'] ?? '?')}" sets both text and textFile — use one`,
+        )
+      }
+      const full = resolve(base, ref)
+      node['text'] = await readFile(full, 'utf8').catch(() => {
+        throw new ConfigError(
+          `${suiteFile}: source "${String(node['id'] ?? '?')}" — could not read textFile ${full}`,
+        )
+      })
+      delete node['textFile']
+      return
+    }
+
+    await Promise.all(Object.values(node).map(walk))
+  }
+
+  await walk(doc)
+  return doc
 }
 
 async function parseFile(file: string): Promise<unknown> {
@@ -141,7 +196,7 @@ export async function loadCalibrationSet(file: string): Promise<CalibrationSet> 
   } catch (e) {
     throw new ConfigError(`${file}: could not parse — ${(e as Error).message}`)
   }
-  return validateCalibrationSet(doc, file)
+  return validateCalibrationSet(await resolveSourceFiles(doc, file), file)
 }
 
 export function validateCalibrationSet(doc: unknown, file = '<inline>'): CalibrationSet {
