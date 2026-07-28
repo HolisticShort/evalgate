@@ -13,6 +13,12 @@ export interface CacheKeyParts {
   modelId: string
   modelParams: Record<string, unknown>
   assertion: AssertionConfig
+  /**
+   * Present only for assertion-result entries. An assertion scores a specific
+   * output, so two samples of a nondeterministic system share every other key
+   * component and must not share a cache entry.
+   */
+  output?: unknown
 }
 
 export function cacheKey(parts: CacheKeyParts): string {

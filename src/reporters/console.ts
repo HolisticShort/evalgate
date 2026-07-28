@@ -24,7 +24,8 @@ export const consoleReporter: Reporter = {
     out('')
     out(
       `${s.bold(result.suite)}   ${result.cases.length} cases · ${result.cases[0]?.samples.length ?? 0} samples · ` +
-        `${result.cost.cached} cached, ${result.cost.executed} executed`,
+        `${result.cost.cached} cached, ${result.cost.executed} executed` +
+        judgedCost(result.cost.judged),
     )
     out('')
 
@@ -86,4 +87,14 @@ function renderClaims(meta: GroundedMeta, out: (str: string) => void, s: typeof 
 
 function truncate(str: string, n: number): string {
   return str.length <= n ? str : `${str.slice(0, n - 1)}…`
+}
+
+/**
+ * Judged work is the part that costs real money, so it earns its own segment
+ * rather than being added into the run counts. Silent when nothing was judged —
+ * a suite of deterministic assertions shouldn't carry a `judge 0/0` on every line.
+ */
+function judgedCost(judged?: { cached: number; executed: number }): string {
+  if (!judged || judged.cached + judged.executed === 0) return ''
+  return ` · judge ${judged.cached} cached, ${judged.executed} executed`
 }

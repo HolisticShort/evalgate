@@ -98,6 +98,30 @@ export default {
 export const judge = { id: 'judge-v1', async judge(prompt, schema) { /* ... */ } }
 ```
 
+## RAG, and why the suite can't declare your sources
+
+If a retriever picks the documents at run time, the context in your suite file is a *guess about the
+retriever's behavior*, and grounding a claim against a guess scores the wrong thing in both directions: it
+reports a hallucination when the model correctly used a chunk you didn't list, and reports grounded output
+when the retriever surfaced the wrong chunk and the model faithfully used it.
+
+So the system under test may report what it actually retrieved, and `grounded` attributes against that:
+
+```js
+async run({ prompt }) {
+  const retrieved = await myRetriever(prompt)     // [{ id, text }]
+  return { output: await myAgent(prompt, retrieved), retrieved }
+}
+```
+
+The envelope is recognized only when **both** `output` and `retrieved` are present — `output` alone is far
+too common a key in ordinary structured output to claim as a reserved word. Precedence is `sources` on the
+assertion (an explicit override) → `retrieved` → the suite's `input.context`.
+
+**Fold your index version into `sut.version`.** The cache is keyed on that string, so a re-run at an
+unchanged version replays the previous retrieval verbatim. In a RAG system the index is part of the system;
+if reindexing can't move the version, a reindex goes ungated.
+
 Real output from `npm run example`:
 
 ```
@@ -203,8 +227,10 @@ because deleting a failing case is a way to make a gate pass and it should cost 
 1. **Everything lives in the repo.** Suites, thresholds, and baselines are files, reviewed in PRs. Quality
    standards that live in a SaaS dashboard drift from the code silently.
 2. **Scores, not booleans.**
-3. **The gate must be cheap enough to leave on.** Content-addressed caching, so unchanged cases on an
-   unchanged system are free. A gate that costs $40 per PR gets disabled in week three.
+3. **The gate must be cheap enough to leave on.** Content-addressed caching covers both the system's output
+   and every judged assertion result, so a re-run on an unchanged system makes zero model calls. Cases run
+   concurrently (`--concurrency`, default 4). A gate that costs $40 per PR gets disabled in week three, and
+   one that takes an hour gets disabled in week one.
 4. **Provider-agnostic core.** No SDK imports in `src/`. You bring a function; judge and embedding
    providers are injected at the edge.
 5. **Explain every failure.** A red build that says `0.71 < 0.80` is useless.

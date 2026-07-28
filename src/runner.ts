@@ -9,7 +9,10 @@ import type {
   EmbeddingProvider,
   AssertionResult,
   AssertionConfig,
+  SourceDocument,
+  SutOutput,
 } from './types.js'
+import { isSutEnvelope } from './types.js'
 import { get as getAssertion, byCost } from './assertions/index.js'
 import { cacheKey, cacheEnabled, type Cache } from './cache.js'
 
@@ -20,8 +23,18 @@ export interface RunOptions {
   embed?: EmbeddingProvider
   baseline?: SuiteResult
   cache?: Cache
+  /** Cases evaluated at once. See DEFAULT_CONCURRENCY. */
+  concurrency?: number
   warn?: (msg: string) => void
 }
+
+/**
+ * Conservative on purpose. Every unit of concurrency is a concurrent request
+ * against someone's provider account, and a gate that trips a rate limit reads
+ * as a quality failure to whoever opened the PR. Raise it deliberately with
+ * `--concurrency` once you know your own limits.
+ */
+export const DEFAULT_CONCURRENCY = 4
 
 /**
  * load → sample → assert → aggregate → gate
@@ -34,12 +47,12 @@ export async function run(opts: RunOptions): Promise<SuiteResult> {
   if (samples < 1) throw new Error('samples must be >= 1')
 
   const useCache = Boolean(cache) && cacheEnabled(sut.version, warn)
-  const cost = { cached: 0, executed: 0 }
+  const cost = { cached: 0, executed: 0, judged: { cached: 0, executed: 0 } }
 
-  const cases: CaseResult[] = []
-  for (const c of suite.cases) {
-    cases.push(await runCase(c, { suite, sut, judge, embed, cache: useCache ? cache : undefined, cost }))
-  }
+  const ctx: CaseCtx = { suite, sut, judge, embed, cache: useCache ? cache : undefined, cost }
+  const cases = await mapConcurrent(suite.cases, opts.concurrency ?? DEFAULT_CONCURRENCY, c =>
+    runCase(c, ctx),
+  )
 
   const mean = cases.length === 0 ? 0 : cases.reduce((s, c) => s + c.score, 0) / cases.length
 
@@ -64,7 +77,52 @@ interface CaseCtx {
   judge: JudgeProvider | undefined
   embed: EmbeddingProvider | undefined
   cache: Cache | undefined
-  cost: { cached: number; executed: number }
+  cost: CostCounters
+}
+
+export interface CostCounters {
+  cached: number
+  executed: number
+  judged: { cached: number; executed: number }
+}
+
+/**
+ * Bounded-concurrency map that preserves input order.
+ *
+ * Order matters beyond tidiness: the case list is the user's suite as written,
+ * and a report that reshuffles it on every run makes two runs impossible to
+ * diff by eye. Completion order is an execution detail and stays one.
+ */
+export async function mapConcurrent<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new Error(`concurrency must be an integer >= 1, got ${limit}`)
+  }
+
+  const results = new Array<R>(items.length)
+  let next = 0
+
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++
+      if (i >= items.length) return
+      results[i] = await fn(items[i] as T, i)
+    }
+  }
+
+  // A rejection propagates, but only after the in-flight workers settle —
+  // otherwise a failure mid-run leaves provider calls orphaned in the
+  // background and the process exits while they are still billing.
+  const settled = await Promise.allSettled(
+    Array.from({ length: Math.min(limit, items.length) }, worker),
+  )
+  const failed = settled.find(s => s.status === 'rejected')
+  if (failed) throw (failed as PromiseRejectedResult).reason
+
+  return results
 }
 
 async function runCase(c: EvalCase, ctx: CaseCtx): Promise<CaseResult> {
@@ -75,10 +133,24 @@ async function runCase(c: EvalCase, ctx: CaseCtx): Promise<CaseResult> {
   let anyCached = false
 
   for (let i = 0; i < samples; i++) {
-    const { output, cached } = await produce(c, i, ctx)
+    const { output: raw, cached } = await produce(c, i, ctx)
     anyCached ||= cached
 
-    const results = await evaluateAssertions(c, output, { judge: ctx.judge, embed: ctx.embed })
+    // The envelope is unwrapped after the cache, not before, so a cached run
+    // still knows what the system retrieved.
+    const output = isSutEnvelope(raw) ? raw.output : raw
+    const retrieved = isSutEnvelope(raw) ? raw.retrieved : undefined
+
+    const results = await evaluateAssertions(
+      c,
+      output,
+      {
+        ...(ctx.judge ? { judge: ctx.judge } : {}),
+        ...(ctx.embed ? { embed: ctx.embed } : {}),
+        ...(retrieved ? { retrieved } : {}),
+      },
+      ctx.cache ? { cache: ctx.cache, sutVersion: ctx.sut.version as string, cost: ctx.cost } : undefined,
+    )
     const score = weightedMean(results.map(r => r.score), c.weights)
 
     sampleScores.push(score)
@@ -109,7 +181,7 @@ async function produce(
   c: EvalCase,
   sampleIndex: number,
   ctx: CaseCtx,
-): Promise<{ output: string | Record<string, unknown>; cached: boolean }> {
+): Promise<{ output: SutOutput; cached: boolean }> {
   const key = ctx.cache
     ? cacheKey({
         caseInput: c.input,
@@ -124,7 +196,7 @@ async function produce(
     const hit = await ctx.cache.get(key)
     if (hit !== undefined) {
       ctx.cost.cached++
-      return { output: hit as string | Record<string, unknown>, cached: true }
+      return { output: hit as SutOutput, cached: true }
     }
   }
 
@@ -138,6 +210,18 @@ async function produce(
 export interface Providers {
   judge?: JudgeProvider | undefined
   embed?: EmbeddingProvider | undefined
+  retrieved?: SourceDocument[] | undefined
+}
+
+/**
+ * Everything needed to cache an assertion result. Separate from `Providers`
+ * because calibration deliberately runs uncached — it exists to measure the
+ * judge, and a judge that answers from cache is not being measured.
+ */
+export interface AssertionCacheCtx {
+  cache: Cache
+  sutVersion: string
+  cost: CostCounters
 }
 
 /**
@@ -149,6 +233,7 @@ export async function evaluateAssertions(
   c: EvalCase,
   output: string | Record<string, unknown>,
   providers: Providers,
+  cacheCtx?: AssertionCacheCtx,
 ): Promise<(AssertionResult & { type: string })[]> {
   // Results are parked at their declaration index, never matched back by type.
   // Matching by type collapses two assertions of the same type onto one result:
@@ -174,12 +259,48 @@ export async function evaluateAssertions(
     }
 
     const assertion = getAssertion(config.type)
+
+    // Only expensive assertions are cached. A regex costs less to run than to
+    // hash and read off disk, and caching it would make the run slower while
+    // reporting a higher hit rate.
+    const key =
+      cacheCtx && assertion.cost === 'expensive'
+        ? cacheKey({
+            caseInput: c.input,
+            sutVersion: cacheCtx.sutVersion,
+            modelId: providers.judge?.id ?? 'no-judge',
+            // The retrieved set is part of what the assertion scored, and a
+            // retriever can change what it returns without the SUT version
+            // moving. Leaving it out of the key serves a stale grounding score
+            // for a corpus the system no longer sees.
+            modelParams: { kind: 'assertion', retrieved: providers.retrieved ?? null },
+            assertion: config,
+            output,
+          })
+        : undefined
+
+    if (key && cacheCtx) {
+      const hit = await cacheCtx.cache.get(key)
+      if (hit !== undefined) {
+        const cachedResult = hit as AssertionResult
+        cacheCtx.cost.judged.cached++
+        if (cachedResult.critical) critical = true
+        results[index] = { ...cachedResult, type: config.type }
+        continue
+      }
+    }
+
     const result = await assertion.evaluate(config, {
       case: c,
       output,
       ...(providers.judge ? { judge: providers.judge } : {}),
       ...(providers.embed ? { embed: providers.embed } : {}),
+      ...(providers.retrieved ? { retrieved: providers.retrieved } : {}),
     })
+    if (key && cacheCtx) {
+      cacheCtx.cost.judged.executed++
+      await cacheCtx.cache.set(key, result)
+    }
     if (result.critical) critical = true
     results[index] = { ...result, type: config.type }
   }

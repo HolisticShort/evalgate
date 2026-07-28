@@ -21,7 +21,41 @@
 export interface SystemUnderTest {
   name: string
   version?: string
-  run(input: CaseInput): Promise<string | Record<string, unknown>>
+  run(input: CaseInput): Promise<SutOutput>
+}
+
+/**
+ * What a system under test may return.
+ *
+ * A bare string or object is the output itself. A `SutEnvelope` additionally
+ * reports the documents the system actually retrieved at run time — the case
+ * that RAG makes unavoidable, because there the source set is chosen by a
+ * retriever rather than declared in the suite. Attributing claims against a
+ * corpus the system never saw scores the wrong thing in both directions: it
+ * reports a hallucination when the model correctly used a chunk the suite
+ * didn't list, and reports grounded output when the retriever surfaced the
+ * wrong chunk and the model faithfully used it.
+ */
+export type SutOutput = string | Record<string, unknown> | SutEnvelope
+
+/**
+ * Recognized only when BOTH keys are present. A lone `output` key is far too
+ * common in ordinary structured output to claim as a reserved word, so the
+ * envelope is opt-in by virtue of carrying `retrieved`.
+ */
+export interface SutEnvelope {
+  output: string | Record<string, unknown>
+  retrieved: SourceDocument[]
+}
+
+export function isSutEnvelope(v: unknown): v is SutEnvelope {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    !Array.isArray(v) &&
+    'output' in v &&
+    Array.isArray((v as { retrieved?: unknown }).retrieved)
+  )
 }
 
 export interface CaseInput {
@@ -111,6 +145,11 @@ export interface AssertionResult {
 export interface AssertionContext {
   case: EvalCase
   output: string | Record<string, unknown>
+  /**
+   * Documents the system reported retrieving for this input, when it reported
+   * any. Takes precedence over the suite's declared context — see `SutEnvelope`.
+   */
+  retrieved?: SourceDocument[]
   judge?: JudgeProvider
   embed?: EmbeddingProvider
 }
@@ -236,7 +275,14 @@ export interface SuiteResult {
   gates: GateResult[]
   passed: boolean
   judgeAgreement?: number
-  cost: { cached: number; executed: number }
+  /**
+   * `cached`/`executed` count system-under-test runs, so they still equal
+   * cases × samples. Judged assertions are counted separately rather than
+   * folded in: they are a different unit at a different price, and merging
+   * them would quietly break the arithmetic a reader does on that line.
+   * Optional so artifacts written before assertion caching still parse.
+   */
+  cost: { cached: number; executed: number; judged?: { cached: number; executed: number } }
 }
 
 export interface GateResult {

@@ -53,6 +53,7 @@ interface Args {
   threshold: number | undefined
   cache: boolean
   gate: boolean
+  concurrency: number | undefined
 }
 
 function parseArgs(argv: string[]): Args {
@@ -70,6 +71,7 @@ function parseArgs(argv: string[]): Args {
     history: undefined,
     window: undefined,
     threshold: undefined,
+    concurrency: undefined,
   }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -86,6 +88,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--history') args.history = argv[++i]
     else if (a === '--window') args.window = num(a, argv[++i])
     else if (a === '--threshold') args.threshold = num(a, argv[++i])
+    else if (a === '--concurrency') args.concurrency = num(a, argv[++i])
     else if (a?.startsWith('--')) throw new ConfigError(`unknown flag ${a}`)
   }
   return args
@@ -140,6 +143,7 @@ async function cmdRun(argv: string[]): Promise<ExitCode> {
         ...(mod.judge ? { judge: mod.judge } : {}),
         ...(mod.embed ? { embed: mod.embed } : {}),
         ...(cache ? { cache } : {}),
+        ...(args.concurrency ? { concurrency: args.concurrency } : {}),
         ...(baselines.get(suite.name) ? { baseline: baselines.get(suite.name) as SuiteResult } : {}),
       }),
     )

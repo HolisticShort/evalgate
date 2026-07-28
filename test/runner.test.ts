@@ -1,10 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { run } from '../src/runner.js'
+import { run, mapConcurrent } from '../src/runner.js'
 import { cacheKey, cacheEnabled, MemoryCache } from '../src/cache.js'
 import { validateSuite, ConfigError } from '../src/config.js'
 import { fakeSut, fakeJudge } from './fakes.js'
-import type { Suite, AssertionConfig } from '../src/types.js'
+import type { Suite, AssertionConfig, CaseInput } from '../src/types.js'
 
 const suite = (over: Partial<Suite> = {}): Suite => ({
   name: 's',
@@ -250,4 +250,285 @@ test('a valid suite passes validation unchanged', () => {
   })
   assert.equal(s.name, 's')
   assert.equal(s.cases.length, 1)
+})
+
+// ---------------------------------------------------------------------------
+// Concurrency
+// ---------------------------------------------------------------------------
+
+const manyCases = (n: number): Suite =>
+  suite({
+    samples: 1,
+    cases: Array.from({ length: n }, (_, i) => ({
+      id: `c${i}`,
+      input: { prompt: `p${i}` },
+      assertions: [{ type: 'contains', terms: ['hello'] }] as AssertionConfig[],
+    })),
+  })
+
+test('mapConcurrent preserves input order regardless of completion order', async () => {
+  const delays = [30, 0, 20, 10]
+  const out = await mapConcurrent(delays, 4, async d => {
+    await new Promise(r => setTimeout(r, d))
+    return d
+  })
+  assert.deepEqual(out, delays)
+})
+
+test('mapConcurrent never exceeds the limit', async () => {
+  let inFlight = 0
+  let peak = 0
+  await mapConcurrent(Array.from({ length: 20 }, (_, i) => i), 3, async () => {
+    peak = Math.max(peak, ++inFlight)
+    await new Promise(r => setTimeout(r, 1))
+    inFlight--
+    return null
+  })
+  assert.ok(peak <= 3, `peak concurrency ${peak} exceeded limit 3`)
+})
+
+test('mapConcurrent rejects a non-positive limit rather than hanging', async () => {
+  await assert.rejects(() => mapConcurrent([1], 0, async x => x), /concurrency must be an integer/)
+})
+
+test('cases run concurrently but land in suite order', async () => {
+  const seen: string[] = []
+  const sut = fakeSut(async (input: CaseInput) => {
+    // Reverse the natural order: the last case finishes first.
+    const n = Number(String(input.prompt).slice(1))
+    await new Promise(r => setTimeout(r, (8 - n) * 5))
+    seen.push(String(input.prompt))
+    return 'hello'
+  })
+
+  const r = await run({ suite: manyCases(8), sut, concurrency: 8 })
+
+  assert.deepEqual(
+    r.cases.map(c => c.caseId),
+    Array.from({ length: 8 }, (_, i) => `c${i}`),
+  )
+  // Completion order really was not declaration order — otherwise this test
+  // would pass on a sequential runner and prove nothing.
+  assert.notDeepEqual(seen, Array.from({ length: 8 }, (_, i) => `p${i}`))
+})
+
+test('a case that throws fails the run rather than being silently dropped', async () => {
+  const sut = fakeSut(async (input: CaseInput) => {
+    if (input.prompt === 'p2') throw new Error('provider exploded')
+    return 'hello'
+  })
+  await assert.rejects(() => run({ suite: manyCases(5), sut, concurrency: 5 }), /provider exploded/)
+})
+
+// ---------------------------------------------------------------------------
+// Assertion-result caching
+// ---------------------------------------------------------------------------
+
+const groundedSuite = (): Suite =>
+  suite({
+    samples: 1,
+    thresholds: { floor: 0.5 },
+    cases: [
+      {
+        id: 'g',
+        input: {
+          prompt: 'hi',
+          context: [{ id: 'd1', text: 'The sky is blue.' }],
+        },
+        assertions: [{ type: 'grounded' }] as AssertionConfig[],
+      },
+    ],
+  })
+
+const skyClaims = { claims: [{ text: 'The sky is blue.', type: 'factual', hedged: false }] }
+const skyVerdicts = {
+  verdicts: [
+    { claimIndex: 0, status: 'supported', evidence: [{ docId: 'd1', span: 'The sky is blue.' }], reasoning: 'stated' },
+  ],
+}
+
+test('a judged assertion is cached across runs, not just the SUT output', async () => {
+  const cache = new MemoryCache()
+
+  const j1 = fakeJudge([skyClaims, skyVerdicts])
+  const r1 = await run({ suite: groundedSuite(), sut: fakeSut(['The sky is blue.']), judge: j1, cache })
+  assert.equal(j1.calls.length, 2) // extraction + attribution
+  assert.equal(r1.cost.judged?.executed, 1)
+  assert.equal(r1.cost.judged?.cached, 0)
+
+  // Same case, same SUT version, same judge — the judge must not be called again.
+  const j2 = fakeJudge([])
+  const r2 = await run({ suite: groundedSuite(), sut: fakeSut(['The sky is blue.']), judge: j2, cache })
+  assert.equal(j2.calls.length, 0)
+  assert.equal(r2.cost.judged?.cached, 1)
+  assert.equal(r2.cases[0]?.score, r1.cases[0]?.score)
+})
+
+test('a different judge id invalidates the assertion cache', async () => {
+  const cache = new MemoryCache()
+  await run({ suite: groundedSuite(), sut: fakeSut(['The sky is blue.']), judge: fakeJudge([skyClaims, skyVerdicts]), cache })
+
+  const swapped = fakeJudge([skyClaims, skyVerdicts])
+  swapped.id = 'other-judge'
+  await run({ suite: groundedSuite(), sut: fakeSut(['The sky is blue.']), judge: swapped, cache })
+
+  // A judge swap that reused the old judge's cached verdicts would let the new
+  // judge inherit credibility it never earned.
+  assert.equal(swapped.calls.length, 2)
+})
+
+test('a different output invalidates the assertion cache', async () => {
+  const cache = new MemoryCache()
+  await run({ suite: groundedSuite(), sut: fakeSut(['The sky is blue.']), judge: fakeJudge([skyClaims, skyVerdicts]), cache })
+
+  const second = fakeJudge([skyClaims, skyVerdicts])
+  // Same case and version, different text — scoring the old verdicts against
+  // new output is exactly the stale-result failure the cache must never cause.
+  await run({ suite: groundedSuite(), sut: fakeSut(['The sky is green.'], 'v2'), judge: second, cache })
+  assert.equal(second.calls.length, 2)
+})
+
+test('deterministic assertions are not cached', async () => {
+  const cache = new MemoryCache()
+  const r = await run({ suite: suite({ samples: 1 }), sut: fakeSut(['hello']), cache })
+  assert.equal(r.cost.judged?.executed, 0)
+  assert.equal(r.cost.judged?.cached, 0)
+})
+
+test('SUT run counts stay in units of cases x samples', async () => {
+  const r = await run({ suite: groundedSuite(), sut: fakeSut(['The sky is blue.']), judge: fakeJudge([skyClaims, skyVerdicts]) })
+  assert.equal(r.cost.executed, 1)
+  assert.equal(r.cost.cached, 0)
+})
+
+// ---------------------------------------------------------------------------
+// Retrieved documents (RAG)
+// ---------------------------------------------------------------------------
+
+const retrievalSuite = (): Suite =>
+  suite({
+    samples: 1,
+    thresholds: { floor: 0.5 },
+    cases: [
+      {
+        id: 'r',
+        // What the suite guessed the retriever would surface.
+        input: { prompt: 'hi', context: [{ id: 'declared', text: 'The sky is green.' }] },
+        assertions: [{ type: 'grounded' }] as AssertionConfig[],
+      },
+    ],
+  })
+
+test('grounded attributes against what the system retrieved, not what the suite declared', async () => {
+  const judge = fakeJudge([skyClaims, skyVerdicts])
+  const sut = fakeSut([
+    { output: 'The sky is blue.', retrieved: [{ id: 'd1', text: 'The sky is blue.' }] },
+  ])
+
+  const r = await run({ suite: retrievalSuite(), sut, judge })
+
+  const attribution = judge.calls[1] as string
+  assert.match(attribution, /\[d1\]/)
+  assert.doesNotMatch(attribution, /\[declared\]/)
+  assert.equal(r.cases[0]?.score, 1)
+})
+
+test('the envelope is unwrapped so retrieved docs are not scored as claims', async () => {
+  const judge = fakeJudge([skyClaims, skyVerdicts])
+  const sut = fakeSut([
+    { output: 'The sky is blue.', retrieved: [{ id: 'd1', text: 'The sky is blue.' }] },
+  ])
+  await run({ suite: retrievalSuite(), sut, judge })
+
+  // Claim extraction must see the answer alone. Handing it the serialized
+  // envelope turns every retrieved chunk into a claim about the world.
+  const extraction = judge.calls[0] as string
+  assert.match(extraction, /The sky is blue\./)
+  assert.doesNotMatch(extraction, /retrieved/)
+})
+
+test('an object output without `retrieved` is still the output itself', async () => {
+  const judge = fakeJudge([{ claims: [] }])
+  const sut = fakeSut([{ output: 'not an envelope', answer: 42 }])
+  const r = await run({ suite: retrievalSuite(), sut, judge })
+
+  // `output` alone is far too common a key in ordinary structured output to be
+  // treated as a reserved envelope marker.
+  assert.match(judge.calls[0] as string, /"answer": 42/)
+  assert.equal(r.cases[0]?.score, 1)
+})
+
+test('an explicit sources on the assertion still overrides retrieved', async () => {
+  const judge = fakeJudge([skyClaims, skyVerdicts])
+  const s = suite({
+    samples: 1,
+    thresholds: { floor: 0.5 },
+    cases: [
+      {
+        id: 'r',
+        input: { prompt: 'hi' },
+        assertions: [
+          { type: 'grounded', sources: [{ id: 'pinned', text: 'The sky is blue.' }] },
+        ] as AssertionConfig[],
+      },
+    ],
+  })
+  const sut = fakeSut([{ output: 'The sky is blue.', retrieved: [{ id: 'd1', text: 'x' }] }])
+  await run({ suite: s, sut, judge })
+
+  assert.match(judge.calls[1] as string, /\[pinned\]/)
+})
+
+test('the retrieved set is part of the assertion cache key', () => {
+  const base = {
+    caseInput: { prompt: 'hi' },
+    sutVersion: 'v1',
+    modelId: 'fake-judge',
+    assertion: { type: 'grounded' } as AssertionConfig,
+    output: 'The sky is blue.',
+  }
+  const a = cacheKey({ ...base, modelParams: { kind: 'assertion', retrieved: [{ id: 'd1', text: 'x' }] } })
+  const b = cacheKey({ ...base, modelParams: { kind: 'assertion', retrieved: [{ id: 'd2', text: 'x' }] } })
+
+  // A retriever can change what it returns without any code changing. If the
+  // retrieved set were outside the key, the gate would serve a grounding score
+  // for a corpus the system no longer sees.
+  assert.notEqual(a, b)
+})
+
+// Worth knowing, and the reason the test above is a key-level test rather than
+// a two-run test: the SUT output cache is keyed on the version string alone, so
+// a re-run at an unchanged version replays the previous retrieval verbatim. In
+// a RAG system the index is part of the system — fold its version into
+// `sut.version`, or a reindex goes ungated.
+test('an unchanged SUT version replays the cached retrieval', async () => {
+  const cache = new MemoryCache()
+  const first = fakeJudge([skyClaims, skyVerdicts])
+  await run({
+    suite: retrievalSuite(),
+    sut: fakeSut([{ output: 'The sky is blue.', retrieved: [{ id: 'd1', text: 'The sky is blue.' }] }]),
+    judge: first,
+    cache,
+  })
+
+  const second = fakeJudge([])
+  const r = await run({
+    suite: retrievalSuite(),
+    sut: fakeSut([{ output: 'The sky is blue.', retrieved: [{ id: 'd2', text: 'The sky is blue.' }] }]),
+    judge: second,
+    cache,
+  })
+  assert.equal(second.calls.length, 0)
+  assert.equal(r.cost.cached, 1)
+})
+
+test('grounded with no context and no retrieved names all three ways to supply sources', async () => {
+  const s = suite({
+    samples: 1,
+    cases: [{ id: 'r', input: { prompt: 'hi' }, assertions: [{ type: 'grounded' }] as AssertionConfig[] }],
+  })
+  await assert.rejects(
+    () => run({ suite: s, sut: fakeSut(['x']), judge: fakeJudge([]) }),
+    /input\.context.*sources.*retrieved/s,
+  )
 })

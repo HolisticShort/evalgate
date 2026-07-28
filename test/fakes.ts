@@ -1,4 +1,10 @@
-import type { JudgeProvider, EmbeddingProvider, SystemUnderTest, CaseInput } from '../src/types.js'
+import type {
+  JudgeProvider,
+  EmbeddingProvider,
+  SystemUnderTest,
+  CaseInput,
+  SutOutput,
+} from '../src/types.js'
 
 /**
  * A scripted judge. The whole reason providers are injected rather than
@@ -29,7 +35,7 @@ export function fakeEmbed(vectors: Record<string, number[]>): EmbeddingProvider 
 }
 
 export function fakeSut(
-  outputs: (string | Record<string, unknown>)[] | ((i: CaseInput, n: number) => string),
+  outputs: SutOutput[] | ((i: CaseInput, n: number) => SutOutput | Promise<SutOutput>),
   version = 'v1',
 ): SystemUnderTest & { runs: number } {
   let runs = 0
@@ -42,7 +48,7 @@ export function fakeSut(
     async run(input: CaseInput) {
       const n = runs++
       if (typeof outputs === 'function') return outputs(input, n)
-      return outputs[n % outputs.length] as string
+      return outputs[n % outputs.length] as SutOutput
     },
   }
   return sut as SystemUnderTest & { runs: number }

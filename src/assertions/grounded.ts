@@ -29,9 +29,17 @@ export const grounded: Assertion<GroundedConfig> = {
       throw new Error('grounded requires a judge provider — see SPEC.md § Who judges the judge')
     }
 
-    const sources = config?.sources ?? ctx.case.input.context ?? []
+    // Precedence: an explicit `sources` on the assertion is the suite author
+    // overriding deliberately and wins. Otherwise what the system actually
+    // retrieved beats what the suite declared — in a RAG system the declared
+    // context is a guess about the retriever's behavior, and scoring against a
+    // guess is how a grounding number stops meaning anything.
+    const sources = config?.sources ?? ctx.retrieved ?? ctx.case.input.context ?? []
     if (sources.length === 0) {
-      throw new Error(`grounded: case "${ctx.case.id}" has no source documents to attribute against`)
+      throw new Error(
+        `grounded: case "${ctx.case.id}" has no source documents to attribute against — ` +
+          'declare `input.context`, set `sources` on the assertion, or return `retrieved` from the system under test',
+      )
     }
 
     const output = typeof ctx.output === 'string' ? ctx.output : JSON.stringify(ctx.output, null, 2)
