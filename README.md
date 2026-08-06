@@ -9,6 +9,46 @@ cases, and fails the build when quality moves the wrong way — like a linter, n
 
 ---
 
+```
+$ git clone https://github.com/HolisticShort/evalgate.git && cd evalgate && npm install
+$ npm run example
+
+support-agent   5 cases · 3 samples · 0 cached, 15 executed
+
+  ✗ floor              suite mean 0.467 < floor 0.8
+  ✓ regression         no baseline available — regression gate skipped (not evaluated)
+  ✗ criticalCases      pii-leak 0 < 0.95
+  ✗ criticalAssertions order-status, pii-leak
+
+  ✗ order-status  0.00  CRITICAL
+      grounded — 0/3 claims supported · 2 contradicted · 1 unsupported
+        ✗ "Your package will arrive Tuesday."
+            no source mentions delivery dates
+        ✗ "Shipping is free on orders over $50."
+            the policy states $75, not $50
+            policy-v3: "Free shipping applies to orders over $75."
+        ✗ "A $60 order qualifies for free shipping."
+            $60 is below the stated $75 threshold
+            policy-v3: "Free shipping applies to orders over $75."
+  ✗ pii-leak  0.00  CRITICAL
+      noPII — PII detected: email(da************om)
+      grounded — skipped — case already failed a critical assertion
+  • wrong-document  0.33
+      contextRecall — 0/1 expected documents retrieved — missing returns-v2
+      contextPrecision — 0/2 retrieved documents were expected — 2 unlabelled: shipping-v1, hours-v1
+
+  FAIL
+```
+
+That is a real run, verbatim, on a clean checkout — offline, no API key, exit 1. Three different failures,
+each named: a model that invented a delivery date and misquoted a $75 policy as $50, an address that
+leaked, and a retriever that fetched the wrong document while the generator faithfully summarized it and
+scored 1.00 doing so. Note also that `pii-leak` never paid for the grounding pass — it had already failed a
+critical assertion, so the expensive work was skipped. That's the difference between a gate teams leave on
+and one they disable.
+
+---
+
 ## Why
 
 Teams ship LLM features and test them by looking at them. That works until a prompt edit, a model version
@@ -177,40 +217,6 @@ Resolved relative to the suite file, so a suite means the same thing wherever `e
 both `text` and `textFile` is a config error rather than a silent preference, and a YAML anchor shared
 across cases reads the file once.
 
-Real output from `npm run example`:
-
-```
-support-agent   5 cases · 3 samples · 0 cached, 15 executed
-
-  ✗ floor              suite mean 0.467 < floor 0.8
-  ✓ regression         no baseline available — regression gate skipped (not evaluated)
-  ✗ criticalCases      pii-leak 0 < 0.95
-  ✗ criticalAssertions order-status, pii-leak
-
-  ✗ order-status  0.00  CRITICAL
-      grounded — 0/3 claims supported · 2 contradicted · 1 unsupported
-        ✗ "Your package will arrive Tuesday."
-            no source mentions delivery dates
-        ✗ "Shipping is free on orders over $50."
-            the policy states $75, not $50
-            policy-v3: "Free shipping applies to orders over $75."
-        ✗ "A $60 order qualifies for free shipping."
-            $60 is below the stated $75 threshold
-            policy-v3: "Free shipping applies to orders over $75."
-  ✗ pii-leak  0.00  CRITICAL
-      noPII — PII detected: email(da************om)
-      grounded — skipped — case already failed a critical assertion
-  • wrong-document  0.33
-      contextRecall — 0/1 expected documents retrieved — missing returns-v2
-      contextPrecision — 0/2 retrieved documents were expected — 2 unlabelled: shipping-v1, hours-v1
-
-  FAIL
-```
-
-Note what the last line of that run is doing: `pii-leak` already failed a critical assertion, so the
-expensive grounding pass was **skipped rather than paid for**. That's the difference between a gate teams
-leave on and one they disable.
-
 ## Drift
 
 The gate above answers "did this PR make it worse?" It cannot answer "has this been getting worse the
@@ -221,6 +227,9 @@ time series can't be reconstructed after the fact.
 ```bash
 npx evalgate drift --window 20 --threshold 0.05
 ```
+
+Illustrative — drift needs a history several runs deep, so this is what the report looks like once one
+exists, not a capture of a single example run:
 
 ```
 support-agent   6 runs · 2026-06-01 → 2026-07-06
@@ -316,19 +325,21 @@ its own test suite:
 npx evalgate calibrate --set evals/calibration.yaml --judge ./evals/sut.mjs
 ```
 
+Real output from `npm run example:calibrate` — the scripted demo judge agrees with its human scores
+exactly, which is what a calibrated judge looks like:
+
 ```
 judge-v1-calibration   judge scripted-demo-judge · 6 human-scored cases
 
-  ✓ agreement    judge–human agreement 0.917 ≥ minimum 0.85
-  ✓ bias         judge scores 0.083 low on average (allowed ±0.1)
-  · correlation  0.92 — does the judge rank cases the way humans do
+  ✓ agreement    judge–human agreement 1 ≥ minimum 0.85
+  ✓ bias         judge scores neither high nor low on average (allowed ±0.1)
+  · correlation  1.00 — does the judge rank cases the way humans do
 
-  largest disagreements
-    ✗ half-supported         human 1.00  judge 0.50   0.50 too harsh
-        the window is supported; nothing in the sources says who pays return shipping
-
-  CALIBRATED   agreement 0.92 — published with every judged score
+  CALIBRATED   agreement 1.00 — published with every judged score
 ```
+
+When a judge *does* disagree, a `largest disagreements` section lists the worst cases with the human score,
+the judge score, and the direction it erred.
 
 A calibration case is an eval case plus a human score and a **committed output** — calibration holds the
 output constant and varies the judge, which is the only way a score change is attributable to the judge
@@ -386,14 +397,30 @@ where you want that score to stop a merge, and want to be able to defend the num
 
 ## Getting started
 
+> **Not on npm yet.** `@holisticconsulting/evalgate` is not published to the registry — install from the
+> repo. Publishing is deliberate and hasn't happened, so don't `npm install` the name and don't `npx
+> evalgate` outside a project that has this installed: an unrelated `evalgate` package *does* exist on the
+> registry and `npx` will happily fetch that one instead.
+
 ```bash
-npm install --save-dev @holisticconsulting/evalgate
+git clone https://github.com/HolisticShort/evalgate.git
+cd evalgate
+npm install
+npm run example        # full run, offline, no API key — exits 1 on purpose
 ```
 
-The package is scoped; the CLI it installs is called `evalgate`. Inside a project that has it as a
-dependency, `npx evalgate` resolves to the local binary. **Outside one it does not** — an unrelated
-`evalgate` package exists on the registry, and `npx` would fetch that instead. Run it from the project
-root, or use `npx @holisticconsulting/evalgate` if you want the name to be unambiguous.
+To use it in your own project, install from the git URL:
+
+```bash
+npm install --save-dev github:HolisticShort/evalgate
+```
+
+That builds on install (`prepare`) and puts an `evalgate` binary in your project's `node_modules/.bin`, so
+`npx evalgate` from the project root resolves to it. Every `npx evalgate` command below assumes that.
+
+**Don't install with a `file:` path.** npm symlinks a `file:` dependency, skips `prepare`, and links no
+binary — and `npx evalgate` then falls through to the unrelated registry package instead of failing. Use
+the git URL.
 
 Then three files, in this order:
 

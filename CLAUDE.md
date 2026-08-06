@@ -10,6 +10,7 @@ evalgate is a pre-merge quality gate for LLM features: a CLI that runs eval suit
 
 ```bash
 npm run build          # tsc → dist/
+npm run prepare        # same; runs automatically on npm install and git-URL install
 npm run dev            # tsc --watch
 npm run typecheck      # tsc --noEmit
 npm test               # tsc -p tsconfig.test.json → dist-test/, then node --test
